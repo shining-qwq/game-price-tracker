@@ -1,0 +1,41 @@
+DROP TABLE IF EXISTS price_targets;
+DROP TABLE IF EXISTS price_observations;
+DROP TABLE IF EXISTS games;
+DROP TABLE IF EXISTS users;
+
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    display_name TEXT NOT NULL
+);
+
+CREATE TABLE games (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    subtitle TEXT NOT NULL,
+    genre TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    region TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    accent TEXT NOT NULL
+);
+
+CREATE TABLE price_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER NOT NULL,
+    price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+    observed_at TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games (id)
+);
+
+CREATE TABLE price_targets (
+    user_id INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    target_cents INTEGER NOT NULL CHECK (target_cents >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, game_id),
+    FOREIGN KEY (user_id) REFERENCES users (id),
+    FOREIGN KEY (game_id) REFERENCES games (id)
+);
+
+CREATE INDEX idx_price_observations_game_time
+ON price_observations (game_id, observed_at DESC);
