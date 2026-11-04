@@ -25,6 +25,14 @@
     <p>当前模拟价</p>
     <strong>{{ game.current_price_cents|money }}</strong>
     <span>观测于 {{ game.current_observed_at }}</span>
+    <span class="sync-time">
+      上次成功同步：
+      {% if sync_status and sync_status.last_success_at %}
+        {{ sync_status.last_success_at }}
+      {% else %}
+        尚未手动同步
+      {% endif %}
+    </span>
   </div>
 </section>
 
@@ -93,6 +101,7 @@
       <thead>
         <tr>
           <th scope="col">观测时间</th>
+          <th scope="col">稳定事件 ID</th>
           <th scope="col">平台</th>
           <th scope="col" class="number">价格</th>
         </tr>
@@ -101,6 +110,7 @@
         {% for row in history %}
         <tr>
           <td>{{ row.observed_at }}</td>
+          <td><code class="event-id">{{ row.source_event_id }}</code></td>
           <td>{{ game.platform }}</td>
           <td class="number"><strong>{{ row.price_cents|money }}</strong></td>
         </tr>

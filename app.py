@@ -5,6 +5,9 @@ import sqlite3
 import click
 from flask import Flask, abort, flash, g, redirect, render_template, request, url_for
 
+from adapters.demo_price_source import DemoPriceSource
+from services.price_sync import sync_prices
+
 
 DEMO_USER_ID = 1
 
@@ -50,21 +53,28 @@ def seed_demo_data(db):
     )
 
     observations = {
-        1: [(2400, "2026-08-08 10:00:00"), (1800, "2026-08-29 10:00:00"), (2400, "2026-09-19 10:00:00"), (1200, "2026-10-10 10:00:00"), (1800, "2026-11-03 10:00:00")],
+        1: [(15800, "2026-08-08 10:00:00"), (14800, "2026-08-29 10:00:00"), (13800, "2026-09-19 10:00:00"), (12800, "2026-10-10 10:00:00"), (12800, "2026-11-03 10:00:00")],
         2: [(5800, "2026-08-08 10:05:00"), (2900, "2026-08-22 10:05:00"), (5800, "2026-09-12 10:05:00"), (2300, "2026-10-17 10:05:00"), (2900, "2026-11-03 10:05:00")],
         3: [(19800, "2026-08-08 10:10:00"), (7900, "2026-08-29 10:10:00"), (19800, "2026-09-26 10:10:00"), (9900, "2026-10-24 10:10:00"), (7900, "2026-11-03 10:10:00")],
         4: [(8000, "2026-08-08 10:15:00"), (6400, "2026-08-29 10:15:00"), (8000, "2026-09-19 10:15:00"), (4800, "2026-10-10 10:15:00"), (6400, "2026-11-03 10:15:00")],
     }
     for game_id, history in observations.items():
         db.executemany(
-            "INSERT INTO price_observations (game_id, price_cents, observed_at) VALUES (?, ?, ?)",
-            [(game_id, price, observed_at) for price, observed_at in history],
+            """
+            INSERT INTO price_observations
+                (source_event_id, game_id, price_cents, observed_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (f"seed-game-{game_id}-observation-{index}", game_id, price, observed_at)
+                for index, (price, observed_at) in enumerate(history, start=1)
+            ],
         )
 
-    # One target starts in the triggered state, so the reminder can be seen immediately.
+    # The default sync changes game 1 from ¥128 to ¥88 and crosses this target.
     db.execute(
         "INSERT INTO price_targets (user_id, game_id, target_cents) VALUES (?, ?, ?)",
-        (DEMO_USER_ID, 1, 2000),
+        (DEMO_USER_ID, 1, 10000),
     )
 
 
@@ -77,6 +87,28 @@ def init_db_command():
     seed_demo_data(db)
     db.commit()
     click.echo("演示数据库初始化完成：4 款游戏，20 条价格记录。")
+
+
+@app.cli.command("sync-prices")
+@click.option(
+    "--scenario",
+    type=click.Choice(["price-drop", "late", "failure"]),
+    default="price-drop",
+    show_default=True,
+    help="选择固定的模拟数据源场景。",
+)
+def sync_prices_command(scenario):
+    """Fetch demo observations and idempotently store them in SQLite."""
+    result = sync_prices(get_db(), DemoPriceSource(), scenario=scenario)
+    if not result.success:
+        raise click.ClickException(
+            f"同步失败：{result.error}。旧价格与上次成功时间已保留。"
+        )
+
+    click.echo(
+        f"同步成功：收到 {result.received} 条，新增 {result.inserted} 条，"
+        f"忽略重复 {result.received - result.inserted} 条。"
+    )
 
 
 @app.template_filter("money")
@@ -123,7 +155,7 @@ def game_detail(game_id):
 
     history = db.execute(
         """
-        SELECT price_cents, observed_at
+        SELECT source_event_id, price_cents, observed_at
         FROM price_observations
         WHERE game_id = ?
         ORDER BY observed_at DESC, id DESC
@@ -131,6 +163,14 @@ def game_detail(game_id):
         (game_id,),
     ).fetchall()
     games = db.execute("SELECT id, title FROM games ORDER BY id").fetchall()
+    sync_status = db.execute(
+        """
+        SELECT last_success_at, last_attempt_at, last_error
+        FROM sync_status
+        WHERE source_name = ?
+        """,
+        (DemoPriceSource.name,),
+    ).fetchone()
     reminder_active = (
         game["target_cents"] is not None
         and game["current_price_cents"] is not None
@@ -142,6 +182,7 @@ def game_detail(game_id):
         games=games,
         history=history,
         reminder_active=reminder_active,
+        sync_status=sync_status,
     )
 
 

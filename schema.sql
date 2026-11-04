@@ -1,3 +1,4 @@
+DROP TABLE IF EXISTS sync_status;
 DROP TABLE IF EXISTS price_targets;
 DROP TABLE IF EXISTS price_observations;
 DROP TABLE IF EXISTS games;
@@ -21,10 +22,18 @@ CREATE TABLE games (
 
 CREATE TABLE price_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_event_id TEXT NOT NULL UNIQUE,
     game_id INTEGER NOT NULL,
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
     observed_at TEXT NOT NULL,
     FOREIGN KEY (game_id) REFERENCES games (id)
+);
+
+CREATE TABLE sync_status (
+    source_name TEXT PRIMARY KEY,
+    last_attempt_at TEXT NOT NULL,
+    last_success_at TEXT,
+    last_error TEXT
 );
 
 CREATE TABLE price_targets (

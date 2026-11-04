@@ -204,6 +204,12 @@ h1 {
 .price-ticket p { margin: 0; color: #6f592b; font-size: 13px; font-weight: 800; }
 .price-ticket strong { display: block; margin: 5px 0 1px; font-family: Bahnschrift, sans-serif; font-size: clamp(40px, 5vw, 58px); line-height: 1.1; letter-spacing: -.04em; }
 .price-ticket span { color: #766d59; font-family: Consolas, monospace; font-size: 11px; }
+.price-ticket .sync-time {
+  display: block;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed #cbbf9b;
+}
 
 .flash-stack { margin-top: 18px; }
 .flash { margin: 0; padding: 12px 16px; border-radius: 10px; font-weight: 650; }
@@ -331,6 +337,7 @@ td { padding: 15px 13px; border-bottom: 1px solid #eceef4; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:first-child { background: #fbfaff; }
 .number { text-align: right; font-variant-numeric: tabular-nums; }
+.event-id { color: #515872; font-size: 12px; white-space: nowrap; }
 
 @media (max-width: 760px) {
   .site-header, main { width: min(100% - 28px, 1120px); }
