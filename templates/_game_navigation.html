@@ -8,7 +8,7 @@
   {% for item in navigation_games %}
   <a href="{{ url_for('game_detail', game_id=item.id) }}"{% if item.id == navigation_game_id %} class="active" aria-current="page"{% endif %}>{{ item.title }}</a>
   {% else %}
-  <span class="helper">暂无已追踪游戏，请到“搜索并加入游戏”添加。</span>
+  <span class="helper">{% if current_user %}暂无已追踪游戏，请到“搜索并加入游戏”添加。{% else %}登录后查看你的追踪列表；也可以先搜索游戏。{% endif %}</span>
   {% endfor %}
 </nav>
 {% endif %}

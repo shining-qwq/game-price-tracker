@@ -9,12 +9,31 @@
     <h1>{{ game.title }}</h1>
     <p class="subtitle">{{ game.subtitle }}</p>
     <span class="genre">{{ game.genre }}</span>
-    {% if is_real and game.is_tracked and game.steam_app_id %}
+    {% if is_real and current_user and game.steam_app_id %}
+    {% if is_tracked_by_current_user %}
     <form method="post" action="{{ url_for('untrack_game', return_to='detail') }}" class="detail-track-form">
       {% include '_csrf.html' %}
       <input type="hidden" name="steam_app_id" value="{{ game.steam_app_id }}">
       <button type="submit" class="cancel-tracking" aria-label="取消追踪 {{ game.title }}">取消追踪</button>
-      <span>保留历史价格、目标价和旧通知</span>
+      <span>只取消你的追踪，保留目标价和旧通知</span>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('track_game') }}" class="detail-track-form">
+      {% include '_csrf.html' %}
+      <input type="hidden" name="steam_app_id" value="{{ game.steam_app_id }}">
+      <button type="submit">加入我的追踪</button>
+      <span>沿用共享价格历史，恢复原目标价，不补发暂停期间的通知</span>
+    </form>
+    {% endif %}
+    {% elif is_real and not current_user %}
+    <p><a href="{{ url_for('login', next=url_for('game_detail', game_id=game.id)) }}">登录后加入个人追踪</a></p>
+    {% endif %}
+    {% if not is_real and current_user %}
+    <form method="post" action="{{ url_for('change_demo_tracking', game_id=game.id) }}" class="detail-track-form">
+      {% include '_csrf.html' %}
+      <input type="hidden" name="action" value="{{ 'remove' if is_tracked_by_current_user else 'add' }}">
+      <button type="submit">{{ '取消模拟追踪' if is_tracked_by_current_user else '加入模拟追踪' }}</button>
+      <span>只影响你，不改变真实游戏的追踪关系</span>
     </form>
     {% endif %}
   </div>
@@ -63,13 +82,16 @@
     <div class="section-heading">
       <div>
         <p class="kicker">你的关注</p>
-        <h2>设置目标价</h2>
+        <h2>我的目标价</h2>
       </div>
-      {% if game.target_cents is not none %}
+      {% if current_user and game.target_cents is not none %}
         <span class="saved-target">当前 {{ game.target_cents|money }}</span>
       {% endif %}
     </div>
     <p class="helper">保存目标价只更新订阅。后续同步时，价格从高于目标价降至目标价或以下才通知；持续低价不重复提醒，涨回目标价以上后再次达标可再提醒。</p>
+    {% if current_user %}
+    {% if not is_tracked_by_current_user %}<p class="helper">你尚未追踪此游戏。可以保存个人目标价，加入追踪后才会在后续降价时通知。</p>{% endif %}
+    {% if game.target_cents is none %}<p class="helper">你尚未为此游戏设置目标价。</p>{% endif %}
     <form method="post" action="{{ url_for('set_target', game_id=game.id) }}" class="target-form">
       {% include '_csrf.html' %}
       <label for="target_price">目标价（美元 USD）</label>
@@ -81,6 +103,9 @@
         <button type="submit">保存目标价</button>
       </div>
     </form>
+    {% else %}
+    <p><a href="{{ url_for('login', next=url_for('game_detail', game_id=game.id)) }}">登录后设置自己的目标价</a>，并查看个人降价通知。</p>
+    {% endif %}
   </section>
 
   <section class="panel low-panel">

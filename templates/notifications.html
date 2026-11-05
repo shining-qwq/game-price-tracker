@@ -3,8 +3,8 @@
 {% block content %}
 <section class="panel history-panel">
   <div class="section-heading">
-    <h1 style="font-size: 32px">站内通知</h1>
-    <span class="record-count">{{ notifications|length }} 条 · 演示用户</span>
+    <h1 style="font-size: 32px">我的站内通知</h1>
+    <span class="record-count">{{ notifications|length }} 条 · {{ current_user.username }}</span>
   </div>
   <p class="helper">仅同步时从高于目标价降至目标价或以下才通知。持续低价不重复提醒，涨回后可再次触发。触发时间为价格观测时间。</p>
   {% if notifications %}

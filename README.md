@@ -1,6 +1,6 @@
 # 价格观察站（Steam / USD）
 
-Python、Flask、SQLite、Jinja HTML 和 CSS 练习项目。支持最小注册、登录、退出和管理员身份；目标价与通知暂时仍共用原演示用户数据，尚未实现多用户隔离。内置 4 款演示游戏，可搜索加入其他 Steam 游戏，支持模拟同步与 CheapShark 动态真实同步。所有金额以整数美分保存，页面用 `$` 与 USD 表示。
+Python、Flask、SQLite、Jinja HTML 和 CSS 练习项目。支持注册、登录、退出和管理员身份；追踪关系、目标价与通知按当前登录用户隔离，游戏档案和价格历史全站共享。内置 4 款演示游戏，可搜索加入其他 Steam 游戏，支持模拟同步与 CheapShark 动态真实同步。所有金额以整数美分保存，页面用 `$` 与 USD 表示。
 
 ## 安装、升级与启动（Windows PowerShell）
 
@@ -14,7 +14,7 @@ python -m venv .venv
 
 如果系统 Python 已安装 Flask，也可以直接使用 `python -m flask ...`。下文以 `python` 为例，请使用安装了 Flask 的同一个解释器。
 
-`upgrade-db` 在美元数据库不存在时创建数据，已存在则以事务增加外部 ID、追踪状态和账号字段/索引，可以重复执行；不会清空已有美元数据，也不会重新开启已取消的追踪。升级失败会回滚失败事务并报错，请检查冲突，不要用 `init-db` 绕过。`init-db` 会清空并重建美元数据库，包括已有账号、真实价格、订阅和通知，只有明确需要重置时才执行。
+`upgrade-db` 在美元数据库不存在时创建数据，已存在则在同一事务中升级外部 ID、账号、通知重试及个人追踪关系，可以重复执行；不会清空已有美元数据，也不会恢复已取消的个人追踪。升级失败整轮回滚并报错，请检查冲突，不要用 `init-db` 绕过。`init-db` 会清空并重建美元数据库，包括已有账号、追踪关系、真实价格、订阅和通知，只有明确需要重置时才执行。
 
 - 模拟详情：<http://127.0.0.1:5000/games/1>（游戏 ID 1～4）
 - 真实详情：<http://127.0.0.1:5000/games/101>（游戏 ID 101～104）
@@ -25,11 +25,50 @@ python -m venv .venv
 
 详情页顶部可以切换模拟/真实来源。模拟启动和测试不需要联网或密钥。
 
-第一栏在详情页、搜索页和通知页始终按“模拟数据 / 真实报价 / 搜索并加入游戏”排列，只切换高亮，不改变顺序。第二栏仅在模拟或真实分类中显示该分类的游戏名称；真实分类只显示正在追踪的游戏。全部取消后，真实分类仍然可以打开，并提示搜索加入游戏。
+第一栏在详情页、搜索页和通知页始终按“模拟数据 / 真实报价 / 搜索并加入游戏”排列，只切换高亮，不改变顺序。第二栏只显示当前用户在该分类的个人追踪游戏。匿名可以搜索、打开共享详情，但没有个人列表。空模拟分类额外列出四款“公开模拟示例”，可打开详情后加入自己的模拟追踪。
 
-## 最小账号系统（本轮范围）
+## 个人追踪与共享档案
 
-先执行 `python -m flask --app app upgrade-db`，然后重启服务，不能靠 `init-db` 清库升级。注册普通账号后登录，导航会显示用户名；管理员另显示角色标记。游戏详情、搜索和当前演示通知可以公开浏览；加入/取消追踪、保存目标价和退出须登录。注册和登录本身也有 CSRF 保护。
+`games` 每款游戏仍只有一份档案，没有 `user_id`；Steam/CheapShark 外部 ID 的唯一索引继续生效，价格历史仍按全局 `game_id` 保存一份。新增 `user_game_tracking(user_id, game_id, created_at)`，以 `(user_id, game_id)` 为主键，支持按用户查询；另有 `(game_id, user_id)` 索引，支持同步查找游戏的追踪者。
+
+A 和 B 追踪同一款游戏只会增加两条关联，不会复制游戏或历史。取消只删除操作者自己的关联，不删除目标价、通知、通知重试或全局档案。保存目标价只保存个人订阅，不自动加入追踪；尚未追踪或已取消时暂停新通知。重新加入恢复原目标价，但加入本身不补发未追踪期间错过的通知，也不重放旧历史。
+
+### 旧数据库的一次性迁移
+
+- 在事务中创建关联表和索引，并在 `schema_migrations` 保存 `user_game_tracking_v1` 标记。
+- 首次升级将旧 `games.is_tracked=1` 的游戏分别关联到升级时所有现有用户，包括原演示用户 1 和管理员；旧标记为 0 的游戏不自动加入任何用户列表。这保留迁移前各用户看到的共享列表。尚未有旧标记的更早版本按当时全部可见的档案迁移。
+- 已有用户、密码哈希、游戏档案、外部 ID、价格历史、目标价、通知、失败重试和同步状态均保留。旧 `is_tracked` 列可以留在旧库中，但已废弃：仅首次迁移读取，运行时代码不再读取或修改它；新安装的 `schema.sql` 没有这列。
+- 表、回填、索引和迁移标记随升级一起提交或回滚。重复升级不重复回填，因此不会恢复之后取消的关系；迁移后新注册用户和新建管理员的个人列表从空开始。
+- 迁移包括所有旧用户，因此即使网页上的 A、B 都取消，仍可能有演示用户或其他旧用户追踪；只有真实关系数降到 0 才停止真实采集。不要为制造“最后一人取消”的场景删除旧账号；可用升级后新加入的一款游戏验收。
+
+新安装仍保留四款模拟/真实档案；演示用户只预置模拟追踪，不会替新注册用户追踪真实游戏。模拟命令是主动演示，可继续追加全局模拟历史；模拟通知和重试也必须匹配接收者自己的关联。
+
+### 两个会话验收个人追踪
+
+1. 执行两次 `python -m flask --app app upgrade-db` 并重启。使用普通窗口的 A 和无痕/另一浏览器的 B；两个普通标签页共享 session，不能用于这个验证。
+2. 为避开旧列表迁移，选择升级后新注册的 A、B 或一款此前没有任何人追踪的真实游戏。A 搜索加入后 A 显示“已追踪”，B 搜索相同结果仍显示“加入追踪”；B 的第二栏不显示 A 的个人游戏。
+3. B 加入同一游戏后，两人详情地址相同；已有档案不会再次请求验证接口，也不会复制历史或立即重采价格。执行 `python -m flask --app app sync-prices --source cheapshark` 时，该游戏只查询一次。明确的联网验收可能遇到限流或失败，不代表离线测试失败。
+4. 两人分别保存目标价。A 取消后，A 列表移除此游戏，B 的按钮和列表不变，B 继续参与通知；A 的原目标价、旧通知和共享历史仍能在公开详情或个人通知中看到。真实 API 价格变化不可控，确定性的降价通知、重试及并发取消由离线测试验证。
+5. B 作为最后一人取消后，本地档案和历史仍在，下一次真实同步不请求该游戏。A 直接打开旧详情地址可以浏览，并点击“加入我的追踪”恢复同一档案和原目标价；加入动作本身不产生通知。
+6. A 在请求的查询参数、表单或 JSON 中伪造 B 的 `user_id`，只能改变 A 自己的关联或被拒绝；缺失 CSRF 返回 400，匿名不能加入/取消。管理员在普通页面同样只看到自己的列表。
+
+可在本地 SQLite 工具中核对关联、共享档案和迁移标记：
+
+```sql
+SELECT u.username, g.id, g.title, ugt.created_at
+FROM user_game_tracking ugt JOIN users u ON u.id=ugt.user_id
+JOIN games g ON g.id=ugt.game_id ORDER BY u.id,g.id;
+SELECT g.id,g.title,COUNT(ugt.user_id) AS followers FROM games g
+LEFT JOIN user_game_tracking ugt ON ugt.game_id=g.id GROUP BY g.id ORDER BY g.id;
+SELECT steam_app_id,COUNT(*) FROM games WHERE data_source='cheapshark'
+GROUP BY steam_app_id HAVING COUNT(*) > 1; -- 非空有效 AppID 应无重复
+SELECT version,applied_at FROM schema_migrations;
+PRAGMA foreign_key_check; -- 应无结果
+```
+
+## 账号系统与个人数据
+
+先执行 `python -m flask --app app upgrade-db`，然后重启服务，不能靠 `init-db` 清库升级。注册普通账号后登录，导航会显示用户名；管理员另显示角色标记。游戏详情、价格历史和搜索可以公开浏览；通知页、加入/取消追踪、保存目标价和退出须登录。匿名详情只显示登录提示，不查询到任何人的目标价。注册和登录本身也有 CSRF 保护。
 
 用户名为 3～24 位英文字母、数字或下划线，以英文字母开头，去掉首尾空格；保存原大小写用于显示，同时保存小写 `username_normalized`。数据库唯一索引使用 NOCASE，因此 `Alice` 和 `alice` 不能重复注册。密码为 8～128 个字符，不允许全部为空格，不会自动去掉密码中的空格。注册、登录页面的密码默认隐藏，可点击输入框右侧的小眼睛切换显示或隐藏；管理员 CLI 使用同样的长度规则，终端输入仍隐藏。
 
@@ -39,7 +78,61 @@ python -m venv .venv
 
 `users.id=1` 和原显示名“演示用户”保留，规范化用户名设为保留名 `demo`，角色为 `user`，密码哈希留空，因此不能登录，也没有公开默认密码。其他旧无身份字段用户使用 `legacy_原ID` 保留标识，密码哈希同样为空。已有价格、目标价的 user_id、通知和游戏记录不更改、不转移给新注册用户。
 
-本轮 **只建立身份体系**：`DEMO_USER_ID=1` 仍用于原目标价及通知，普通账号登录后修改的仍是共享演示数据，不是自己的私有订阅。追踪列表也仍共用。页面有明确说明；不要把本轮版本当作已完成数据隔离的多用户服务公开部署。下一轮再设计各用户数据归属，管理员同步页面也尚未实现。
+`DEMO_USER_ID=1` 现在只用于初始演示数据创建。运行中的详情查询、目标价保存和通知列表全部使用服务器从 session 加载的 `g.user.id`；旧用户 1 的目标价和历史通知继续归属用户 1，不会分配给第一位注册者。旧演示订阅仍按原条件参与后台同步，但其账号默认不能登录，所以新用户网页不会看到这些通知。上轮任何人以共享演示身份保存的旧目标价无法可靠区分实际操作者，全部保留原归属，不猜测迁移。新用户从空的个人目标价列表开始，需要自行设置。
+
+数据库保留 `price_targets` 的 `(user_id, game_id)` 主键与通知 `(user_id, game_id, source_event_id)` 唯一约束。请求中的 `user_id`、角色、内部用户 ID 均不能改变数据归属；没有按 URL 用户 ID 查询他人数据的接口。管理员在这些页面同样只看自己的目标价和通知，没有默认越权读取能力。
+
+追踪列表、目标价和通知均按本人隔离，只有游戏档案与公开价格全站共用。管理员同步控制台尚未实现，本轮不新增共享账号。
+
+### 两个浏览器会话验收多用户隔离
+
+1. 运行 `python -m flask --app app upgrade-db` 两次并重启。普通浏览器登录用户 A，无痕窗口（或另一浏览器）登录用户 B；同一浏览器的两个普通标签页会共享 Cookie，不算两个会话。
+2. 在终端为模拟游戏 1 建立本次 128 美元基线，不清库：
+
+   ```powershell
+   $demoRun = Get-Date -Format 'yyyyMMddHHmmssfff'
+   python -m flask --app app sync-prices --scenario price-128 --event-id "$demoRun-base"
+   ```
+
+3. 两边打开 <http://127.0.0.1:5000/games/1>，各自点击“加入模拟追踪”，再由 A 保存 `100.00`、B 保存 `90.00`；各自刷新应保留自己的值，保存本身不发送通知。新注册账号不会继承旧演示目标价。
+4. 在保留 `$demoRun` 的同一个 PowerShell 中执行：
+
+   ```powershell
+   python -m flask --app app sync-prices --scenario price-100 --event-id "$demoRun-100"
+   python -m flask --app app sync-prices --scenario price-88 --event-id "$demoRun-88"
+   python -m flask --app app sync-prices --scenario price-120 --event-id "$demoRun-120"
+   python -m flask --app app sync-prices --scenario price-90 --event-id "$demoRun-90"
+   python -m flask --app app sync-prices --scenario price-90 --event-id "$demoRun-90"
+   ```
+
+5. 在各自的通知页核对本次新增：A 在 `100、90` 触发，B 在 `88、90` 触发，各两条；最后重放无新增。CLI 统计所有订阅者，可能还包含旧演示用户及其他账号，不应直接拿全站总数与某个用户页面比较。若这些账号已有历史通知，只比较本次事件前后的增量。
+6. A 打开 `/notifications?user_id=B的ID`、`/games/1?user_id=B的ID`，仍只能看到 A 的个人数据。用开发者工具给目标价表单添加 `user_id=B的ID` 再保存，也只能修改 A；缺失或伪造 CSRF 令牌返回 400。退出后通知页跳转登录，详情仍公开且不显示目标价输入框。
+7. 可再用独立管理员会话检查：导航显示管理员标记，但目标价与通知仍为其本人。手机宽度、切换账号后的缓存表单和提示需手动检查。
+
+以上命令会追加共享模拟价格历史，也可能通知其他符合条件的订阅者；不会修改真实报价。想重复一轮演示时，重新生成 `$demoRun`，不要为新观测复用旧事件 ID。
+
+直接检查数据库时先查自己的内部 ID：
+
+```sql
+SELECT id, username, role FROM users ORDER BY id;
+-- 将 你的用户ID 替换为上面查到的整数；不要查询或输出密码哈希。
+SELECT user_id, game_id, target_cents FROM price_targets
+WHERE user_id=你的用户ID ORDER BY game_id;
+SELECT user_id, game_id, source_event_id, trigger_price_cents, target_cents, observed_at
+FROM notifications WHERE user_id=你的用户ID ORDER BY observed_at, id;
+SELECT user_id, game_id, source_event_id, attempts, error_code FROM notification_retries
+WHERE user_id=你的用户ID;
+```
+
+也可以 `python scripts/inspect_db.py --user-id 你的用户ID --game-id 1`。这是拥有本地数据库文件的开发者工具，不是网站 API，不提供网页账号级文件访问控制；网站不会把请求里的用户 ID 传给这个脚本。
+
+### 单个通知失败与重试
+
+同步与当前请求是否登录无关，始终匹配所有符合条件的订阅。每个收件人的通知插入使用 SQLite 保存点：唯一约束冲突只跳过该用户的重复通知；单用户约束失败时保存 `notification_retries`，继续处理其他用户。失败记录保留当时的目标价、触发价格、观测时间和首次生成时间，仅保存通用错误码，不把数据库错误详情展示给其他用户。
+
+价格、成功通知、失败记录和来源成功状态在同一外层事务提交；数据库整体错误、事务级回滚或无法保存失败记录时整轮回滚，旧价格和成功时间保留。CLI 会明确显示本轮通知失败次数及待重试数量，不能只看“同步成功”就认为全部通知成功。来源成功时间仍表示报价采集成功。网页不展示其他用户的失败详情或订阅统计。
+
+下次成功同步时，在同一事务中重试接收者本人仍在追踪的失败通知，即使收到的价格快照全部重复也会重试；不会重新发送已存在的通知。重试使用原快照，不因目标价后来修改而变成另一个通知；新订阅不会因重放旧价格而补发通知。A 取消时只暂停 A 的失败重试，B 仍追踪时 B 的通知和重试照常；不能用“还有其他人在追踪”代替接收者本人的关联判断。重新加入本身不触发重试，后续成功同步可以恢复取消前已有的失败通知；取消期间没有为该用户生成新的失败快照。外部源失败时不尝试重试，也不修改失败记录或旧成功时间。没有定时任务、后台线程或外部消息服务。
 
 ### 创建或提升管理员
 
@@ -72,13 +165,13 @@ python -m flask --app app run --debug
 
 ### 浏览器验收及限制
 
-1. 连续执行两次升级，检查原详情和目标价保留；匿名仍能浏览，修改操作会要求登录。
+1. 连续执行两次升级，检查数据库中原详情和目标价保留；新账号只看自己的订阅，匿名仍能浏览价格，修改操作会要求登录。
 2. 注册普通用户，重复使用不同大小写的同一用户名应被拒绝；错误密码不能登录，正确密码登录后导航显示用户名。
 3. 用退出按钮退出，身份清除；刷新后再修改应要求登录。删除/篡改表单 CSRF 令牌后提交应报 400，数据不变。
 4. 用隐藏密码 CLI 创建独立管理员，再登录查看管理员角色标记；权限装饰器的匿名/普通/管理员分支由离线测试验证，本轮没有管理员页面可点击。
 5. 打开 `/login?next=https://example.com` 并登录，不能跳到外站。手机宽度下检查注册、登录和导航布局。
 
-限制：没有邮箱验证、验证码、找回密码、OAuth、头像或封禁功能；也没有登录限流、MFA、服务端会话撤销/设备管理和完整审计。退出清除当前浏览器 session，不代表能撤销已泄漏的其他会话副本。角色提升改密后不会自动撤销所有旧会话。目标价/通知/追踪仍共享，不是生产级完整身份系统。
+限制：没有邮箱验证、验证码、找回密码、OAuth、头像或封禁功能；也没有登录限流、MFA、服务端会话撤销/设备管理和完整审计。退出清除当前浏览器 session，不代表能撤销已泄漏的其他会话副本。角色提升改密后不会自动撤销所有旧会话。追踪、目标价和通知已按用户隔离；直接访问数据库文件的开发者不受网页权限限制，不是生产级完整身份系统。
 
 测试命令仍为 `python -m unittest discover -s tests -v`。业务回归测试使用专门的测试用户及真实 session CSRF 令牌，没有关闭防护；账号安全测试使用原始 Flask 客户端，覆盖注册、哈希、退出、管理员 CLI、CSRF、权限、Cookie、跳转和无损迁移。所有价格 API 测试继续使用离线 mock。
 
@@ -105,17 +198,17 @@ python -m flask --app app run --debug
 
 1. 打开 <http://127.0.0.1:5000/games/search>，搜索例如 `Hades`，选择有 Steam AppID 的候选。
 2. 点击“加入追踪”。表单以 POST 提交唯一的 `cheapshark_game_id`，不提交标题或价格。即使手动伪造其他表单字段，后端也不读取它们。
-3. 后端调用官方 `games?id=...` 查询，以响应的 `info.title`、`info.steamAppID` 验证游戏，要求 `deals` 中存在 `storeID=1` 且有有效 `price` 的报价。其他商店报价、搜索结果 `cheapest` 和历史低价均不用于加入验证或写入 Steam 价格。
-4. 验证通过后先提交 CheapShark / Steam / USD 真实档案，然后立即自动执行一次与 `sync-prices --source cheapshark` 相同的同步服务，最后重定向详情页。自动同步读取整个有效追踪列表，也会更新其他已追踪的真实游戏；成功后新游戏直接显示采集价、历史及已记录最低价，无需再手动执行命令。首次采集只建立基线，不触发通知。
-5. 搜索时会根据本地 CheapShark gameID 或 Steam AppID 标记“已追踪”，原四款只有 Steam AppID 时也能识别。点击“已追踪”以 POST 取消追踪；未追踪的游戏显示“加入追踪”。取消请求只读取已保存的稳定 Steam AppID，不需要外部 API；返回搜索结果时会重新执行原关键词查询。重新加入仍需验证，并恢复原档案，不创建副本。遇到两个外部 ID 冲突会提示而不是覆盖。
+3. 若本地已有该 CheapShark ID 的已验证 Steam/USD 档案，只为当前用户插入关联，沿用已有价格和历史，不请求验证接口或重采价格。详情页也可提交已存档 Steam AppID 加入自己的列表。缺少有效 AppID 的本地档案仍拒绝加入。
+4. 对本地尚无匹配档案的 CheapShark ID，调用官方 `games?id=...`，以 `info.title`、`info.steamAppID` 和 `deals` 中 `storeID=1` 的有效报价验证。新档案与本人关联在同一事务保存，然后自动同步各用户追踪列表的游戏并集。若通过 Steam AppID 匹配到已有旧档案则补齐外部标识，不创建副本。首次采集只建立基线，跨商店最低价不写入 Steam 历史。
+5. 搜索标记由本人的关联决定，原四款只有 Steam AppID 时也能识别。点击“已追踪”以 POST 删除自己的关联；未追踪显示“加入追踪”。取消不请求外部 API，返回搜索结果时会重新查询原关键词。已有档案重新加入只恢复自己的关联，不补发旧事件或复制历史。外部 ID 冲突仍会拒绝。
 
-取消追踪通过 `games.is_tracked=0` 保存，保留游戏档案、价格历史、目标价和旧通知。取消后不再展示旧详情，直接访问已取消的详情地址也会转到真实报价分类：有已追踪游戏则打开按内部 ID 升序的第一款，与第二栏顺序一致；没有则显示“暂无已追踪游戏”。重新加入会恢复原内部 ID、历史和目标价，并自动同步。重复取消幂等，不会删除数据，取消本身不生成价格或通知。
+取消追踪只删除 `user_game_tracking` 中本人的关联；`games.is_tracked` 已废弃。档案、价格历史、目标价、旧通知和通知重试全部保留。取消后跳转本人剩余列表的第一款或空状态；直接访问旧详情仍允许公开浏览，按钮显示“加入我的追踪”。重复取消幂等，不改变他人列表。
 
-也可以从“真实报价 → 游戏名”的详情页取消：游戏标题下方提供“取消追踪”按钮，以 POST 提交存储的 Steam AppID，不调用外部接口。成功后从已追踪列表移除并跳转到当前第一款已追踪游戏；最后一款取消后显示空状态。模拟详情页不显示此操作。搜索页原有取消入口继续保留，并仍返回搜索结果。
+也可从真实详情页取消，按钮以 POST 提交 Steam AppID，所有权来自 `g.user`；模拟详情有单独的加入/取消模拟追踪按钮，不改变真实副本。每个状态修改都要求登录并验证 CSRF，匿名只能浏览和搜索。
 
 加入和价格同步是两个阶段：验证不通过则不创建档案；已验证并入库后自动同步失败，保留已追踪档案并在详情页提示“追踪已保存，但自动同步失败”，旧价格和上次成功时间保留，可稍后手动重试。若同步成功但该游戏无报价，则提示缺失，不把加入验证时的报价或跨商店最低价当成历史写入。
 
-`sync-prices --source cheapshark` 从数据库读取所有已开启追踪、来源为 CheapShark、平台/币种为 Steam/USD 且具有有效 Steam AppID 的档案，包括搜索加入的新游戏。取消追踪后不再请求报价，写入前也会再检查追踪状态；没有可同步游戏时不发送外部请求。
+`sync-prices --source cheapshark` 读取至少有一位用户追踪、来源为 CheapShark、平台/币种为 Steam/USD 且 AppID 有效的去重档案。一个游戏被 100 人追踪也只请求和保存一份价格；最后一位用户取消后才停止采集。写入前重新检查是否仍有追踪者，通知与重试则逐用户核对关联；没有可同步游戏时不发送外部请求。
 
 升级在 `games` 中增加 `cheapshark_game_id`、`steam_app_id` 和可空的 `demo_game_id`。真实来源下，CheapShark ID 和 Steam AppID 各有一个数据库唯一索引，事务写入防止重复请求创建两个档案。原四款真实游戏保留原内部 ID 与数据，仅补齐代码中已知的 Steam AppID、显式模拟关联；原先未知的 CheapShark gameID 保持 NULL，在“加入追踪”服务端验证后补齐，不联网猜测或按标题配对。
 
@@ -126,12 +219,12 @@ python -m flask --app app run --debug
 - 连续运行两次升级，确认原四款真实详情、目标价、价格历史和通知仍在。
 - 搜索并加入不在原四款中的 Steam 游戏，检查标题来自 API、两个外部 ID、Steam/USD 来源；自动同步成功后应直接看到当前价和首次历史。后续同步缺价则提示并保留旧价。
 - 返回搜索结果，确认按钮变成“已追踪”；点击后取消，按钮恢复“加入追踪”。再次加入进入同一个详情地址，数据库仍只有一条档案。
-- 在“真实报价”选择游戏，点击标题下方“取消追踪”，确认跳转到第二栏第一款已追踪游戏；最后一款取消后显示“暂无已追踪游戏”。旧详情地址刷新也不能回到已取消的界面。数据库中旧价格、目标价和通知仍保留；模拟页没有取消按钮。
+- 在真实详情取消后，确认跳到本人下一款或空状态，不影响另一账号。旧详情地址可以继续公开浏览，按钮改为加入；旧目标价、通知、历史与重试均保留。模拟按钮只影响本人的模拟关系。
 - 取消前后对比旧历史、目标价与通知数量，确认未删除。重复取消不会反向开启；升级再次执行也不会重开。
 - 从不同分类来回切换，确认第一栏三项顺序固定，第二栏只显示对应游戏。全部取消后真实分类有清晰空状态。
 - 加入已有的星露谷等原游戏，确认进入原 101～104 档案，不生成副本。
 - 没有 Steam AppID 的候选不显示加入按钮；没有 Steam 报价的游戏在后端拒绝。
-- 断网后点击加入应显示错误；已有详情和价格不变。浏览器检查手机宽度和成功/失败提示。
+- 断网后加入尚无本地档案的游戏应提示错误；已有本地档案仍可直接加入或取消个人关系，不依赖外部 API。搜索本身仍依赖网络。浏览器检查手机宽度和提示。
 - 搜索价格卡片先显示 Steam 报价，再显示次要跨商店参考。Steam 报价接口失败时不得用参考价顶替。
 - 加入成功但自动同步失败时，详情页应保留有效档案，给出可重试提示；重复加入后同步相同快照不增加重复历史。
 
@@ -142,10 +235,12 @@ python -m flask --app app run --debug
 ```sql
 -- 检查真实档案及外部 ID
 SELECT id, title, data_source, platform, currency,
-       cheapshark_game_id, steam_app_id, demo_game_id, is_tracked
+       cheapshark_game_id, steam_app_id, demo_game_id
 FROM games WHERE data_source='cheapshark' ORDER BY id;
 
--- is_tracked=1 为已追踪，0 为已取消；取消后档案仍然存在
+-- 追踪查询关联表，不读取旧 is_tracked；取消后档案仍存在
+SELECT user_id,game_id,created_at FROM user_game_tracking
+WHERE user_id=你的用户ID ORDER BY game_id;
 
 -- 用刚加入游戏的 CheapShark ID 替换 这里的ID；重复点击后仍应为 1
 SELECT COUNT(*) FROM games
@@ -161,7 +256,7 @@ PRAGMA index_list(games);
 PRAGMA foreign_key_check;
 ```
 
-不安装 SQLite 工具也可用 `python scripts/inspect_db.py --game-id 新内部ID` 检查该游戏空历史；详情页 URL 最后的数字是内部 ID，不是 CheapShark gameID。
+不安装 SQLite 工具也可用 `python scripts/inspect_db.py --user-id 你的用户ID --game-id 新内部ID` 检查该游戏空历史；详情页 URL 最后的数字是内部 ID，不是 CheapShark gameID。
 
 ## 人民币旧库与美元新库
 
@@ -193,23 +288,21 @@ python -m flask --app app sync-prices --scenario price-90 --event-id drop-001
 
 ## 通知验证：128 → 100 → 88 → 120 → 90
 
-以下 `init-db` 会清空美元库，请先备份需要保留的 `instance/price_tracker_usd.sqlite3`。
+无需清库。先按上面的多用户步骤建立本次 128 美元模拟基线，再登录个人账号为游戏 1 保存 100 美元目标价。在同一 PowerShell 中继续：
 
 ```powershell
-python -m flask --app app init-db
-# 默认模拟游戏 1 当前 $128，目标 $100
-python -m flask --app app sync-prices --scenario price-100 --event-id step-100
-python -m flask --app app sync-prices --scenario price-88 --event-id step-88
-python -m flask --app app sync-prices --scenario price-120 --event-id step-120
-python -m flask --app app sync-prices --scenario price-90 --event-id step-90
-python -m flask --app app sync-prices --scenario price-90 --event-id step-90
+python -m flask --app app sync-prices --scenario price-100 --event-id "$demoRun-100"
+python -m flask --app app sync-prices --scenario price-88 --event-id "$demoRun-88"
+python -m flask --app app sync-prices --scenario price-120 --event-id "$demoRun-120"
+python -m flask --app app sync-prices --scenario price-90 --event-id "$demoRun-90"
+python -m flask --app app sync-prices --scenario price-90 --event-id "$demoRun-90"
 ```
 
-每次新增通知应为 `1、0、0、1、0`，最终通知两条，触发价格是 10000 和 9000 美分。游戏 1 历史共 9 条，重放的 90 美元事件只有一条。
+该账号本次新增通知应为 `1、0、0、1、0`，触发价格是 10000 和 9000 美分；全站 CLI 总数可能包含其他账号。基线之后历史新增 4 条，重放的 90 美元事件只有一条。
 
-目标价必须大于零、最多两位小数。固定使用用户 1，不读取表单传入的用户 ID。保存目标价只更新订阅。后续同步中，上一条有效价格高于目标价且新价格小于等于目标价才通知；持续低价不重复，涨回以上后可再次触发。首次真实采集没有上一条价格，只建立基线，不通知。
+目标价必须大于零、最多两位小数。使用服务端当前登录用户，不读取表单传入的用户 ID。保存目标价只更新本人的订阅。后续同步中，上一条有效价格高于目标价且新价格小于等于目标价才通知；持续低价不重复，涨回以上后可再次触发。首次真实采集没有上一条价格，只建立基线，不通知。
 
-价格、通知和成功同步状态在 `BEGIN IMMEDIATE` 事务中一起提交；写入失败一起回滚。通知具有 `UNIQUE(user_id, game_id, source_event_id)` 约束，并保存触发价格与当时目标价快照。修改订阅不会改写旧通知。
+价格、成功通知、通知失败快照和成功同步状态在 `BEGIN IMMEDIATE` 事务中一起提交；单用户失败隔离并留待重试，数据库整体写入失败则回滚。通知具有 `UNIQUE(user_id, game_id, source_event_id)` 约束，并保存触发价格与当时目标价快照。修改订阅不会改写旧通知。
 
 ## CheapShark 真实手动同步
 
@@ -230,14 +323,15 @@ CheapShark 无需 API 密钥，因此不需要设置环境变量。每批请求�
 
 ### 动态数据流、分批与原子性
 
-1. `services/price_sync.py` 中 `load_sync_games` 读取有效档案，生成不可变的 `PriceSyncGame(game_id, steam_app_id, title)` 对象。无效或缺少 AppID、非 Steam/USD 的档案不参与同步；取消追踪的档案也不参与。
+1. `services/price_sync.py` 中 `load_sync_games` 通过 `EXISTS(user_game_tracking)` 读取各用户追踪游戏的并集，生成不可变的 `PriceSyncGame(game_id, steam_app_id, title)`。一款只出现一次；无效或缺少 AppID、非 Steam/USD、无人追踪的真实档案不参与同步。
 2. CLI 和网页加入后的自动同步均调用 `sync_real_prices`，将对象列表传给 `CheapSharkSource`；适配器不接收数据库连接，不再内置 `STEAM_GAMES` 映射。历史升级中保留原四款的元数据补齐规则，它不决定运行时同步范围。
 3. 根据 [官方文档](https://apidocs.cheapshark.com/)，`deals` 支持逗号分隔的 Steam AppID 查询，结果受 `pageSize` 限制，单页最多 60 条。本实现每批最多查询 60 个 AppID，`pageSize=60`，超过 60 款依次分批。例如 65 款分成 60 + 5 两批。对同一 Steam AppID 只接受一条 Steam 报价；若响应提示额外分页或重复报价，按不完整/歧义响应使整轮失败，不会只取第一页却声称完整成功。
 4. 每条响应核对 `storeID=1`、AppID 必须属于当前批、有效价格及整数源更新时间。映射按 AppID 查找对应内部 ID，不依赖响应顺序。任何一批 HTTP、网络、JSON、分页或字段校验失败，均不返回部分价格事件。
-5. 仅在所有外部批次全部获取、校验成功后，服务进入一个 SQLite 写事务，一起保存整轮价格、通知和成功同步状态；SQL 写入失败则整轮回滚。外部批次失败只写来源的失败状态，不写新价格或通知，不覆盖 `last_success_at`。
+5. 仅在所有外部批次全部获取、校验成功后，服务进入一个 SQLite 写事务，一起保存整轮价格、成功通知、通知失败快照和成功同步状态；单用户通知约束失败由保存点隔离，数据库整体失败则整轮回滚。外部批次失败只写来源的失败状态，不写新价格或通知，不覆盖 `last_success_at`。
 6. 缺失报价不算批次失败，报告标题与 Steam AppID 并保留旧价；同一稳定快照重放仍新增 0 条，旧源快照不覆盖当前价或触发通知。首次采集只建立基线，新游戏随后跨过目标价即可按原规则触发通知。
+7. 网络请求期间不持有写事务。进入 `BEGIN IMMEDIATE` 后，逐游戏再查是否存在任何追踪关系；最后一位用户的取消若已在取价期间提交，本轮即使收到报价也不写入该游戏的新历史或通知。若 B 仍在追踪则价格照常保存，仅匹配 B 的订阅。若同步先获得写锁，取消将等到该事务结束，已经提交的历史通知不会撤销。此边界由两个独立 SQLite 连接的离线测试验证。
 
-成功时 CLI 显示总追踪数、可同步数、收到报价数、新增历史数、缺失数和通知数，并报告跳过的不适用档案。失败时明确报告整轮新增历史与通知均为 0，报价/缺失数未统计，不把失败误报成缺失。数据源请求全部成功但所有游戏都缺价时，来源成功时间可以更新，旧采集价和各自采集时间保留。
+成功时 CLI 分别显示“用户追踪关系总数（真实）”“去重后待同步游戏数”、收到报价数、新增历史数、缺失数和通知数，并报告跳过的去重档案数。例如 100 人追踪同一游戏是 100 条关系、1 款待同步游戏，不能把关系数称为游戏数。失败时报告整轮新增历史与通知为 0，不把失败误报成缺失。取价期间最后一人取消时可能收到报价但新增历史为 0；来源成功时间仍表示请求成功，不保证每款写入。缺失时保留旧价和采集时间。
 
 详情页显示当前采集价、仅从真实记录计算的已记录最低价、历史和来源级别上次成功同步时间；后者表示整轮来源请求成功，不意味着每款都有新报价。字段 `last_attempt_at` 是开始时间，`last_success_at` 是全部批次获取并校验成功后的时间；失败时保留原成功时间。
 
@@ -247,15 +341,15 @@ CheapShark 无需 API 密钥，因此不需要设置环境变量。每批请求�
 # 全套离线测试，HTTP 使用 mock，不依赖网络
 python -m unittest discover -s tests -v
 
-# 网页加入会自动同步；下面可用于已有空档案重试或后续手动更新
+# 新档案加入会自动同步；已有档案直接沿用价格，手动命令用于更新
 python -m flask --app app sync-prices --source cheapshark
 # 报价快照不变时，再次同步应新增 0 条
 python -m flask --app app sync-prices --source cheapshark
 # 使用详情地址末尾的内部 ID 检查该游戏的真实历史
-python scripts/inspect_db.py --game-id 新游戏内部ID
+python scripts/inspect_db.py --user-id 你的用户ID --game-id 新游戏内部ID
 ```
 
-本轮无需新增表字段，原数据库升级命令仍可重复执行，不需要 `init-db`。离线测试覆盖动态五款、原四款回归、65 款分批、第二批失败全轮不写、错 AppID/商店、缺失与零价、重放与旧快照、动态游戏通知、加入后自动同步、自动失败保留档案及 Steam 价格优先展示。联网操作仅为手工验收，不作为离线测试通过的依据。
+动态同步不依赖固定四款映射。新增个人追踪表和迁移标记表，通过 `upgrade-db` 升级，不需要 `init-db`。离线测试覆盖个人列表隔离、档案复用、100 个追踪者仅请求一次、最后取消停止采集、按收件人暂停通知与重试、迁移回滚和并发取消边界，并保留原动态五款、65 款分批、旧快照与价格通知回归。联网操作仅为手工验收，不作为离线测试依据。
 
 币种统一 USD；接口不提供明确国家/地区，因此页面标为“地区未由源提供”，不假装是美国区，也不请求或混入其他商店、币种。响应游戏标识或商店不匹配、价格非法、源时间缺失或网络失败时整批不写价格，保留旧价格和上次成功同步时间。
 
@@ -276,10 +370,10 @@ python scripts/inspect_db.py --game-id 新游戏内部ID
 ## 数据库检查与测试
 
 ```powershell
-# 默认查看模拟游戏 1；所有金额为整数美分
-python scripts/inspect_db.py
+# 查看指定用户的目标价和通知；所有金额为整数美分
+python scripts/inspect_db.py --user-id 你的用户ID
 # 查看真实游戏 101
-python scripts/inspect_db.py --game-id 101
+python scripts/inspect_db.py --user-id 你的用户ID --game-id 101
 # 重跑原始两款游戏的只读外部源探测（需联网）
 python scripts/probe_cheapshark.py
 # 全部离线测试
@@ -296,10 +390,10 @@ ORDER BY g.id, p.observed_at;
 SELECT n.user_id, g.title, g.data_source, n.trigger_price_cents, n.target_cents,
        n.source_event_id, n.observed_at
 FROM notifications n JOIN games g ON g.id=n.game_id
-ORDER BY n.observed_at;
+WHERE n.user_id=你的用户ID ORDER BY n.observed_at;
 
-SELECT COUNT(*) FROM price_observations
-WHERE source_event_id='demo-manual-step-90'; -- 重放后仍为 1
+SELECT source_event_id,COUNT(*) FROM price_observations
+GROUP BY source_event_id HAVING COUNT(*) > 1; -- 应无结果
 ```
 
 ## 代码入口
@@ -310,6 +404,6 @@ WHERE source_event_id='demo-manual-step-90'; -- 重放后仍为 1
 - `adapters/cheapshark.py`：HTTP 请求、字段校验、真实快照标识。
 - `services/price_sync.py`：事务、幂等、旧事件防护、跨阈值通知。
 - `services/game_tracking.py`：服务端验证后的游戏入库、外部 ID 去重。
-- `migrations.py`：可重复执行的外部 ID 字段和唯一索引升级。
-- `schema.sql` 与 `notifications.sql`：表结构和唯一约束。
+- `migrations.py`：可重复执行的外部 ID、账号及通知重试升级。
+- `schema.sql`、`notifications.sql` 与 `notification_retries.sql`：表结构和唯一约束。
 - `templates/`：详情页和站内通知页。

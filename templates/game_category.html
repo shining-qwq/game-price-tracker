@@ -8,5 +8,10 @@
   <h1 class="page-title">暂无已追踪游戏</h1>
   <p class="helper">取消追踪不会删除旧档案。可以搜索游戏后重新加入。</p>
   <a href="{{ url_for('game_search') }}">搜索并加入游戏</a>
+  {% if public_demo_games %}
+  <h2>公开模拟示例</h2>
+  <p class="helper">这些是共享演示档案，打开详情后可加入你自己的模拟追踪。</p>
+  <ul>{% for item in public_demo_games %}<li><a href="{{ url_for('game_detail', game_id=item.id) }}">{{ item.title }}</a></li>{% endfor %}</ul>
+  {% endif %}
 </section>
 {% endblock %}

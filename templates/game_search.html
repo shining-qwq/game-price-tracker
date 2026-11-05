@@ -6,7 +6,7 @@
 <section class="panel search-panel">
   <p class="kicker">CheapShark 游戏目录</p>
   <h1 class="page-title">搜索游戏</h1>
-  <p class="helper">优先显示 Steam/USD 报价，跨商店最低价仅作参考。加入追踪后会自动同步当前追踪列表，再进入详情页；报价由 CheapShark 提供，可能有延迟。</p>
+  <p class="helper">优先显示 Steam/USD 报价，跨商店最低价仅作参考。追踪列表仅属于你；已有档案直接沿用共享价格，新档案验证后自动采集。报价由 CheapShark 提供，可能有延迟。</p>
   {% for category, message in get_flashed_messages(with_categories=true) %}
     <p class="search-message {{ category }}" role="status">{{ message }}</p>
   {% endfor %}
@@ -79,7 +79,9 @@
           </div>
         </dl>
         {% set tracked_game = tracked_by_cheapshark.get(item.game_id) or tracked_by_steam.get(item.steam_app_id) %}
-        {% if tracked_game %}
+        {% if not current_user %}
+        <p class="helper"><a href="{{ url_for('login', next=url_for('game_search', q=query)) }}">登录后加入个人追踪</a></p>
+        {% elif tracked_game %}
         <form method="post" action="{{ url_for('untrack_game') }}">
           {% include '_csrf.html' %}
           <input type="hidden" name="steam_app_id" value="{{ tracked_game.steam_app_id }}">

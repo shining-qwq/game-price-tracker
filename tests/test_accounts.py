@@ -151,7 +151,7 @@ class AccountsTest(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(self.client.post(path, data={**data, "csrf_token": "invalid"}).status_code, 400)
         self.assertEqual(get_db().execute("SELECT target_cents FROM price_targets WHERE game_id=1").fetchone()[0], before_price_target)
-        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=101").fetchone()[0], 1)
+        self.assertEqual(get_db().execute("SELECT COUNT(*) FROM user_game_tracking WHERE game_id=101").fetchone()[0], 0)
         with self.client.session_transaction() as state:
             self.assertIn("user_id", state)
 
@@ -167,6 +167,10 @@ class AccountsTest(unittest.TestCase):
                     self.assertTrue(form["inputs"].get("csrf_token"))
         self.register()
         self.login()
+        with self.client.session_transaction() as state:
+            user_id = state["user_id"]
+        with get_db() as db:
+            db.execute("INSERT INTO user_game_tracking(user_id,game_id) VALUES (?,101)", (user_id,))
         for path in ["/games/1", "/games/101"]:
             for form in FormParser(self.client.get(path).data).forms:
                 if form["method"] == "post":
@@ -247,6 +251,7 @@ class AccountMigrationAndConfigTest(unittest.TestCase):
         try:
             db.executescript(schema)
             db.executescript((root / "notifications.sql").read_text(encoding="utf-8"))
+            db.executescript((root / "notification_retries.sql").read_text(encoding="utf-8"))
             seed_demo_data(db)
             db.commit()
             sync_prices(db, DemoPriceSource(), scenario="sequence")

@@ -11,13 +11,15 @@ from adapters.demo_price_source import DemoPriceSource, validate_scenario
 from adapters.cheapshark import CheapSharkSource, MAX_SEARCH_LENGTH, validate_external_id
 from adapters.contracts import PriceSourceError
 from services.price_sync import sync_prices, sync_real_prices
-from services.game_tracking import track_verified_game, stop_tracking
+from services.game_tracking import track_verified_game, track_existing_game, stop_tracking
 from services.accounts import normalize_username, hash_password
 from werkzeug.security import check_password_hash
-from migrations import upgrade_game_identifiers, upgrade_accounts
+from migrations import (upgrade_game_identifiers, upgrade_accounts, upgrade_notification_retries,
+                        upgrade_user_tracking, migration_transaction)
 from security import configure_security, init_security, csrf_token, login_required, admin_required, safe_next
 
 
+# Reserved legacy owner, used only when creating the original demo fixtures.
 DEMO_USER_ID = 1
 
 app = Flask(__name__)
@@ -94,6 +96,8 @@ def seed_demo_data(db):
         "INSERT INTO price_targets (user_id, game_id, target_cents) VALUES (?, ?, ?)",
         (DEMO_USER_ID, 1, 10000),
     )
+    db.execute("""INSERT INTO user_game_tracking(user_id,game_id)
+                  SELECT ?,id FROM games WHERE data_source='demo'""", (DEMO_USER_ID,))
 
 
 def initialize_database(db):
@@ -104,6 +108,8 @@ def initialize_database(db):
     db.commit()
     upgrade_game_identifiers(db)
     upgrade_accounts(db)
+    upgrade_notification_retries(db)
+    upgrade_user_tracking(db)
 
 
 @app.cli.command("init-db")
@@ -121,8 +127,12 @@ def upgrade_db_command():
         initialize_database(db)
     else:
         try:
-            upgrade_game_identifiers(db)
-            upgrade_accounts(db)
+            with migration_transaction(db):
+                columns = {row[1] for row in db.execute("PRAGMA table_info(games)")}
+                upgrade_game_identifiers(db, backfill_legacy="steam_app_id" not in columns)
+                upgrade_accounts(db)
+                upgrade_notification_retries(db)
+                upgrade_user_tracking(db)
         except sqlite3.DatabaseError:
             raise click.ClickException("升级失败，失败事务已回滚；请检查用户名或外部标识冲突，不要清空数据库。") from None
     click.echo("数据库升级完成；演示用户、价格、订阅和通知已保留，旧人民币数据库未修改。")
@@ -182,9 +192,9 @@ def sync_prices_command(source, event_id, scenario):
     try:
         if source == "cheapshark":
             report = sync_real_prices(get_db())
-            total_tracked, sync_games = report.total_tracked, report.games
+            relationship_count, sync_games = report.tracking_relationships, report.games
             if report.result is None:
-                click.echo(f"总追踪数 {total_tracked}，可同步数 0，收到报价数 0，新增历史数 0，缺失数 0，通知数 0。本次不请求外部报价。")
+                click.echo(f"用户追踪关系总数（真实）{relationship_count}，去重后待同步游戏数 0，收到报价数 0，新增历史数 0，缺失数 0，通知数 0。本次不请求外部报价。")
                 return
             result = report.result
         else:
@@ -193,26 +203,32 @@ def sync_prices_command(source, event_id, scenario):
         raise click.ClickException(f"同步未完成：{exc}") from None
     if not result.success:
         if source == "cheapshark":
-            click.echo(f"总追踪数 {total_tracked}，可同步数 {len(sync_games)}。整轮失败：新增历史数 0，通知数 0；收到报价数与缺失数未统计。")
+            click.echo(f"用户追踪关系总数（真实）{relationship_count}，去重后待同步游戏数 {len(sync_games)}。整轮失败：新增历史数 0，通知数 0；收到报价数与缺失数未统计。")
         raise click.ClickException(
             f"同步失败：{result.error}。旧价格与上次成功时间已保留。"
         )
 
     if source == "cheapshark":
         click.echo(
-            f"同步成功：总追踪数 {total_tracked}，可同步数 {len(sync_games)}，"
+            f"同步成功：用户追踪关系总数（真实）{relationship_count}，去重后待同步游戏数 {len(sync_games)}，"
             f"收到报价数 {result.received}，新增历史数 {result.inserted}，"
             f"缺失数 {len(report.missing_games)}，通知数 {result.notifications}；"
             f"重复或旧事件等未新增 {result.received - result.inserted} 条。"
         )
-        if total_tracked != len(sync_games):
-            click.echo(f"跳过非 Steam/USD 或无有效 Steam AppID 的档案 {total_tracked - len(sync_games)} 款。")
+        if report.tracked_games != len(sync_games):
+            click.echo(f"跳过非 Steam/USD 或无有效 Steam AppID 的档案 {report.tracked_games - len(sync_games)} 款。")
         for game in report.missing_games:
             click.echo(f"缺失报价：{game.title}（Steam AppID {game.steam_app_id}），保留旧价格，未当成免费。")
     else:
         click.echo(
             f"同步成功：收到 {result.received} 条，新增 {result.inserted} 条，"
             f"忽略重复或旧事件 {result.received - result.inserted} 条，生成通知 {result.notifications} 条。"
+        )
+    if result.notification_failures or result.pending_notifications:
+        click.echo(
+            f"通知处理提示：本轮失败 {result.notification_failures} 次，"
+            f"待重试 {result.pending_notifications} 条；价格及其他用户通知已提交。"
+            "下次成功同步时重试，不重复发送已生成的通知。"
         )
 
 
@@ -284,21 +300,25 @@ def logout():
 def navigation_context(section, game=None):
     """Keep category order stable and put only game links in the second bar."""
     db = get_db()
-    demo = db.execute("SELECT id, title FROM games WHERE data_source='demo' ORDER BY id").fetchall()
-    real = db.execute("SELECT id, title FROM games WHERE data_source='cheapshark' AND is_tracked=1 ORDER BY id").fetchall()
+    user_id = g.user["id"] if g.user is not None else None
+    demo = db.execute("""SELECT g.id,g.title FROM games g JOIN user_game_tracking ugt ON ugt.game_id=g.id
+                         WHERE g.data_source='demo' AND ugt.user_id=? ORDER BY g.id""", (user_id,)).fetchall()
+    real = db.execute("""SELECT g.id,g.title FROM games g JOIN user_game_tracking ugt ON ugt.game_id=g.id
+                         WHERE g.data_source='cheapshark' AND ugt.user_id=? ORDER BY g.id""", (user_id,)).fetchall()
     demo_id = demo[0]["id"] if demo else None
     real_id = real[0]["id"] if real else None
     if game is not None:
         if game["data_source"] == "demo":
             demo_id = game["id"]
             partner = db.execute(
-                "SELECT id FROM games WHERE demo_game_id=? AND data_source='cheapshark' AND is_tracked=1 ORDER BY id LIMIT 1",
-                (game["id"],),
+                """SELECT g.id FROM games g JOIN user_game_tracking ugt ON ugt.game_id=g.id
+                   WHERE g.demo_game_id=? AND g.data_source='cheapshark' AND ugt.user_id=? ORDER BY g.id LIMIT 1""",
+                (game["id"], user_id),
             ).fetchone()
             if partner:
                 real_id = partner["id"]
         else:
-            if game["is_tracked"]:
+            if any(item["id"] == game["id"] for item in real):
                 real_id = game["id"]
             partner = db.execute("SELECT id FROM games WHERE id=? AND data_source='demo'", (game["demo_game_id"],)).fetchone()
             if partner:
@@ -317,13 +337,13 @@ def game_category():
     source = request.args.get("source", "demo")
     if source not in ("demo", "cheapshark"):
         abort(400)
-    first = get_db().execute(
-        "SELECT id FROM games WHERE data_source=? AND is_tracked=1 ORDER BY id LIMIT 1", (source,)
-    ).fetchone()
+    context = navigation_context(source)
+    first = context["navigation_games"][0] if context["navigation_games"] else None
     if first:
         return redirect(url_for("game_detail", game_id=first["id"]))
     return render_template(
-        "game_category.html", **navigation_context(source),
+        "game_category.html", **context,
+        public_demo_games=get_db().execute("SELECT id,title FROM games WHERE data_source='demo' ORDER BY id").fetchall() if source == "demo" else [],
         source_label="CheapShark · Steam · USD" if source == "cheapshark" else "模拟数据 · USD",
     )
 
@@ -346,7 +366,10 @@ def game_search():
     if submitted and len(query) <= MAX_SEARCH_LENGTH:
         session["last_game_search"] = query
     tracked = get_db().execute(
-        "SELECT cheapshark_game_id, steam_app_id FROM games WHERE data_source='cheapshark' AND is_tracked=1"
+        """SELECT g.cheapshark_game_id,g.steam_app_id FROM games g
+           JOIN user_game_tracking ugt ON ugt.game_id=g.id
+           WHERE g.data_source='cheapshark' AND ugt.user_id=?""",
+        (g.user["id"] if g.user is not None else None,),
     ).fetchall()
 
     return render_template(
@@ -367,11 +390,22 @@ def game_search():
 @login_required
 def track_game():
     try:
-        # Only the external identifier is read; all other form fields are ignored.
-        verified = CheapSharkSource().get_verified_steam_game(
-            request.form.get("cheapshark_game_id", "")
-        )
-        game_id, created = track_verified_game(get_db(), verified)
+        # External IDs select public archives; the owner always comes from g.
+        cheap_id = request.form.get("cheapshark_game_id")
+        if cheap_id is not None:
+            cheap_id = validate_external_id(cheap_id)
+            existing = track_existing_game(get_db(), g.user["id"], cheapshark_game_id=cheap_id)
+        else:
+            steam_id = validate_external_id(request.form.get("steam_app_id", ""))
+            existing = track_existing_game(get_db(), g.user["id"], steam_app_id=steam_id)
+            if existing is None:
+                raise ValueError("尚无此 Steam 游戏的已验证档案，请先搜索加入。")
+        if existing is not None:
+            game_id, added = existing
+            flash("已加入个人追踪，沿用共享档案与价格历史。" if added else "已在你的追踪列表中。", "success")
+            return redirect(url_for("game_detail", game_id=game_id), code=303)
+        verified = CheapSharkSource().get_verified_steam_game(cheap_id)
+        game_id, created = track_verified_game(get_db(), verified, g.user["id"])
     except (PriceSourceError, ValueError) as exc:
         flash(str(exc), "error")
         return redirect(url_for("game_search"), code=303)
@@ -400,8 +434,8 @@ def untrack_game():
     game_id = None
     try:
         steam_id = validate_external_id(request.form.get("steam_app_id", ""))
-        game_id = stop_tracking(get_db(), steam_id)
-        flash("已取消追踪；历史价格、目标价和旧通知均已保留。", "success")
+        game_id = stop_tracking(get_db(), steam_id, g.user["id"])
+        flash("已取消追踪（仅你的列表）；其他用户不受影响，原目标价、历史及通知均保留。", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     except sqlite3.DatabaseError:
@@ -416,6 +450,7 @@ def untrack_game():
 @app.route("/games/<int:game_id>")
 def game_detail(game_id):
     db = get_db()
+    user_id = g.user["id"] if g.user is not None else None
     game = db.execute(
         """
         SELECT
@@ -438,12 +473,11 @@ def game_detail(game_id):
             ON pt.game_id = g.id AND pt.user_id = ?
         WHERE g.id = ?
         """,
-        (DEMO_USER_ID, game_id),
+        (user_id, game_id),
     ).fetchone()
     if game is None:
         abort(404)
-    if game["data_source"] == "cheapshark" and not game["is_tracked"]:
-        return redirect(url_for("game_category", source="cheapshark"))
+    is_tracked = db.execute("SELECT 1 FROM user_game_tracking WHERE user_id=? AND game_id=?", (user_id, game_id)).fetchone() is not None
 
     history = db.execute(
         """
@@ -464,7 +498,7 @@ def game_detail(game_id):
     ).fetchone()
     notification_count = db.execute(
         "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND game_id = ?",
-        (DEMO_USER_ID, game_id),
+        (user_id, game_id),
     ).fetchone()[0]
     if game["data_source"] == "cheapshark":
         counterpart = db.execute(
@@ -484,16 +518,44 @@ def game_detail(game_id):
         sync_status=sync_status,
         source_label="CheapShark · Steam · USD" if game["data_source"] == "cheapshark" else "模拟数据 · USD",
         is_real=game["data_source"] == "cheapshark",
+        is_tracked_by_current_user=is_tracked,
         counterpart_id=counterpart["id"] if counterpart else None,
         **navigation_context(game["data_source"], game),
     )
+
+
+@app.post("/games/<int:game_id>/demo-tracking")
+@login_required
+def change_demo_tracking(game_id):
+    """Local demo archives use an explicitly validated public route identifier."""
+    db = get_db()
+    if db.execute("SELECT 1 FROM games WHERE id=? AND data_source='demo'", (game_id,)).fetchone() is None:
+        abort(404)
+    action = request.form.get("action")
+    if action not in {"add", "remove"}:
+        abort(400)
+    with db:
+        if action == "add":
+            db.execute("INSERT INTO user_game_tracking(user_id,game_id) VALUES (?,?) ON CONFLICT(user_id,game_id) DO NOTHING", (g.user["id"], game_id))
+        else:
+            db.execute("DELETE FROM user_game_tracking WHERE user_id=? AND game_id=?", (g.user["id"], game_id))
+    flash("已加入你的模拟追踪。" if action == "add" else "已取消你的模拟追踪，目标价与通知保留。", "success")
+    return redirect(url_for("game_detail", game_id=game_id) if action == "add" else url_for("game_category", source="demo"), code=303)
+
+
+@app.after_request
+def prevent_private_page_caching(response):
+    if request.endpoint in {"game_detail", "notifications", "game_search", "game_category"}:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.vary.add("Cookie")
+    return response
 
 
 @app.post("/games/<int:game_id>/target")
 @login_required
 def set_target(game_id):
     db = get_db()
-    game_exists = db.execute("SELECT 1 FROM games WHERE id = ?", (game_id,)).fetchone()
+    game_exists = db.execute("SELECT data_source FROM games WHERE id = ?", (game_id,)).fetchone()
     if game_exists is None:
         abort(404)
 
@@ -510,22 +572,23 @@ def set_target(game_id):
         flash("请输入大于 0、最多两位小数且在可存储范围内的目标价。", "error")
         return redirect(url_for("game_detail", game_id=game_id))
 
-    db.execute(
-        """
-        INSERT INTO price_targets (user_id, game_id, target_cents, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, game_id) DO UPDATE SET
-            target_cents = excluded.target_cents,
-            updated_at = CURRENT_TIMESTAMP
-        """,
-        (DEMO_USER_ID, game_id, target_cents),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            """
+            INSERT INTO price_targets (user_id, game_id, target_cents, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, game_id) DO UPDATE SET
+                target_cents = excluded.target_cents,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (g.user["id"], game_id, target_cents),
+        )
     flash(f"目标价已保存为 {format_money(target_cents)}。", "success")
     return redirect(url_for("game_detail", game_id=game_id))
 
 
 @app.get("/notifications")
+@login_required
 def notifications():
     rows = get_db().execute(
         """
@@ -534,7 +597,7 @@ def notifications():
         WHERE n.user_id = ?
         ORDER BY n.observed_at DESC, n.id DESC
         """,
-        (DEMO_USER_ID,),
+        (g.user["id"],),
     ).fetchall()
     return render_template("notifications.html", notifications=rows, **navigation_context(None))
 

@@ -10,10 +10,11 @@ from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 from app import app, get_db, seed_demo_data
-from adapters.cheapshark import CheapSharkSource, GameSearchResult
+from adapters.cheapshark import CheapSharkSource, GameSearchResult, VerifiedSteamGame
 from adapters.contracts import PriceObservationEvent, PriceSourceError
 from adapters.demo_price_source import DemoPriceSource
-from migrations import upgrade_game_identifiers
+from migrations import upgrade_game_identifiers, upgrade_user_tracking
+from services.game_tracking import track_verified_game
 from services.price_sync import sync_prices, load_sync_games
 
 
@@ -206,8 +207,8 @@ class TrackingPageTest(unittest.TestCase):
                                 'USD', 'cheapshark', '#5066a6', ?, ?)
                     """, (cheap_id, steam_id))
         before = self.snapshot()
-        conflict = self.post(game_id="555", payload=lookup_payload(steam_id="8888"))
-        self.assertTrue(conflict.location.endswith("/games/search"))
+        with self.assertRaises(ValueError):
+            track_verified_game(db, VerifiedSteamGame("555", "8888", "Conflict", 1), self.client.user_id)
         self.assertEqual(self.snapshot(), before)
 
     def test_post_only_buttons_and_original_details(self):
@@ -248,8 +249,8 @@ class TrackingPageTest(unittest.TestCase):
         self.assertTrue(page.request.path.endswith("/games/102"))
         self.assertIn("已取消追踪".encode(), page.data)
         self.assertIn(b'class="cancel-tracking"', page.data)
-        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=101").fetchone()[0], 0)
-        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=102").fetchone()[0], 1)
+        self.assertIsNone(get_db().execute("SELECT 1 FROM user_game_tracking WHERE user_id=? AND game_id=101", (self.client.user_id,)).fetchone())
+        self.assertIsNotNone(get_db().execute("SELECT 1 FROM user_game_tracking WHERE user_id=? AND game_id=102", (self.client.user_id,)).fetchone())
         after = self.snapshot()
         for table in before:
             if table != "games":
@@ -261,7 +262,7 @@ class TrackingPageTest(unittest.TestCase):
         self.assertTrue(result.location.startswith("/games/search"))
 
     def test_cancel_last_real_game_shows_empty_state_and_old_url_redirects(self):
-        get_db().execute("UPDATE games SET is_tracked=0 WHERE data_source='cheapshark' AND id<>101")
+        get_db().execute("DELETE FROM user_game_tracking WHERE game_id IN (SELECT id FROM games WHERE data_source='cheapshark' AND id<>101)")
         get_db().commit()
         before = self.snapshot()
         with patch("adapters.cheapshark.urlopen", side_effect=AssertionError("No external request")):
@@ -269,9 +270,13 @@ class TrackingPageTest(unittest.TestCase):
             old_url = self.client.get("/games/101", follow_redirects=True)
         for result in [page, old_url]:
             self.assertEqual(result.status_code, 200)
-            self.assertEqual(result.request.path, "/games")
-            self.assertIn("暂无已追踪游戏".encode(), result.data)
-            self.assertNotIn(b'class="hero"', result.data)
+            if result is page:
+                self.assertEqual(result.request.path, "/games")
+                self.assertIn("暂无已追踪游戏".encode(), result.data)
+                self.assertNotIn(b'class="hero"', result.data)
+            else:
+                self.assertEqual(result.request.path, "/games/101")
+                self.assertIn("加入我的追踪".encode(), result.data)
             self.assertNotIn(b'class="cancel-tracking"', result.data)
         self.assertIn("已取消追踪".encode(), page.data)
         after = self.snapshot()
@@ -284,7 +289,7 @@ class TrackingPageTest(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertEqual(page.request.path, "/games/101")
         old_url = self.client.get("/games/104", follow_redirects=True)
-        self.assertEqual(old_url.request.path, "/games/101")
+        self.assertEqual(old_url.request.path, "/games/104")
 
     def test_search_state_cancel_and_restore_preserve_all_business_records(self):
         first = self.post()
@@ -311,18 +316,18 @@ class TrackingPageTest(unittest.TestCase):
         for name in before:
             if name != "games":
                 self.assertEqual(before[name], after[name])
-        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=?", (game_id,)).fetchone()[0], 0)
+        self.assertIsNone(get_db().execute("SELECT 1 FROM user_game_tracking WHERE game_id=? AND user_id=?", (game_id,self.client.user_id)).fetchone())
         with patch("app.CheapSharkSource.search_by_title", return_value=results):
             page = self.client.get(response.location)
         self.assertIn('>加入追踪</button>'.encode(), page.data)
         self.assertNotIn(b'action="/games/untrack"', page.data)
         old_detail = self.client.get(first.location)
-        self.assertEqual(old_detail.status_code, 302)
-        self.assertTrue(old_detail.location.endswith("/games?source=cheapshark"))
+        self.assertEqual(old_detail.status_code, 200)
+        self.assertIn("加入我的追踪".encode(), old_detail.data)
         self.assertEqual(get_db().execute("SELECT price_cents FROM price_observations WHERE game_id=? ORDER BY observed_at DESC,id DESC LIMIT 1", (game_id,)).fetchone()[0], 9000)
         restored = self.post()
         self.assertEqual(restored.location, first.location)
-        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=?", (game_id,)).fetchone()[0], 1)
+        self.assertIsNotNone(get_db().execute("SELECT 1 FROM user_game_tracking WHERE game_id=? AND user_id=?", (game_id,self.client.user_id)).fetchone())
         self.assertEqual(len(self.snapshot()["games"]), len(before["games"]))
         with patch("app.CheapSharkSource.search_by_title", return_value=results):
             self.assertIn('>已追踪</button>'.encode(), self.client.get("/games/search?q=Game").data)
@@ -360,7 +365,7 @@ class TrackingPageTest(unittest.TestCase):
                 if section in ("模拟数据", "真实报价"):
                     self.assertEqual([item["text"] for item in parser.bars["游戏列表"]],
                                      ["星露谷物语", "空洞骑士", "双人成行", "潜水员戴夫"])
-        get_db().execute("UPDATE games SET is_tracked=0 WHERE data_source='cheapshark'")
+        get_db().execute("DELETE FROM user_game_tracking WHERE game_id IN (SELECT id FROM games WHERE data_source='cheapshark')")
         get_db().commit()
         page = self.client.get("/games?source=cheapshark")
         self.assertEqual(page.status_code, 200)
@@ -384,14 +389,20 @@ class IdentifierUpgradeTest(unittest.TestCase):
             )
             db.executescript(schema)
             db.executescript((root / "notifications.sql").read_text(encoding="utf-8"))
+            db.executescript((root / "notification_retries.sql").read_text(encoding="utf-8"))
             seed_demo_data(db)
             db.commit()
             before = [tuple(row) for row in db.execute("SELECT * FROM price_observations ORDER BY id")]
-            upgrade_game_identifiers(db)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM games WHERE is_tracked=1").fetchone()[0], 8)
+            db.execute("ALTER TABLE games ADD COLUMN is_tracked INTEGER NOT NULL DEFAULT 1")
+            db.execute("DROP TABLE user_game_tracking")
             db.execute("UPDATE games SET is_tracked=0 WHERE id=101")
             db.commit()
-            upgrade_game_identifiers(db)
+            upgrade_user_tracking(db)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM user_game_tracking").fetchone()[0], 7)
+            db.execute("DELETE FROM user_game_tracking WHERE game_id=102")
+            db.commit()
+            upgrade_user_tracking(db)
+            self.assertIsNone(db.execute("SELECT 1 FROM user_game_tracking WHERE game_id=102").fetchone())
             self.assertEqual(db.execute("SELECT is_tracked FROM games WHERE id=101").fetchone()[0], 0)
             self.assertEqual(before, [tuple(row) for row in db.execute("SELECT * FROM price_observations ORDER BY id")])
         finally:
@@ -430,6 +441,7 @@ class IdentifierUpgradeTest(unittest.TestCase):
             db.executescript((root / "notifications.sql").read_text(encoding="utf-8"))
             seed_demo_data(db)
             db.commit()
+            db.executescript((root / "notification_retries.sql").read_text(encoding="utf-8"))
             sync_prices(db, DemoPriceSource(), scenario="sequence")
             tables = ["price_observations", "price_targets", "notifications", "sync_status"]
             before = {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY 1")] for table in tables}

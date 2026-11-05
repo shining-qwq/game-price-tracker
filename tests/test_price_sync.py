@@ -83,6 +83,8 @@ class PriceSyncTest(unittest.TestCase):
         )
 
     def test_crossings_sequence_and_replay(self):
+        client = business_client()
+        client.post("/games/1/target", data={"target_price": "100.00"})
         runner = app.test_cli_runner()
         for scenario, expected in [
             ("price-100", 1), ("price-88", 1),
@@ -91,17 +93,17 @@ class PriceSyncTest(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 result = runner.invoke(args=["sync-prices", "--scenario", scenario, "--event-id", scenario])
                 self.assertEqual(result.exit_code, 0, repr(result.exception))
-                self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications")[0], expected)
+                self.assertEqual(self.query_one(f"SELECT COUNT(*) FROM notifications WHERE user_id={client.user_id}")[0], expected)
         self.assertEqual(self.query_one("SELECT COUNT(*) FROM price_observations WHERE game_id=1")[0], 9)
         self.assertEqual(self.query_one(
-            "SELECT group_concat(trigger_price_cents) FROM (SELECT trigger_price_cents FROM notifications ORDER BY observed_at)"
+            f"SELECT group_concat(trigger_price_cents) FROM (SELECT trigger_price_cents FROM notifications WHERE user_id={client.user_id} ORDER BY observed_at)"
         )[0], "10000,9000")
-        page = business_client().get("/notifications?user_id=999")
+        page = client.get("/notifications?user_id=999")
         self.assertEqual(page.status_code, 200)
         for text in ["星露谷物语", "$100.00", "$90.00", "模拟数据"]:
             self.assertIn(text.encode(), page.data)
 
-    def test_target_validation_and_fixed_user_without_immediate_notification(self):
+    def test_target_validation_and_current_user_without_immediate_notification(self):
         client = business_client()
         for value in ["0", "-1", "12.345", "100.000", "NaN", "Infinity", "1e2", "", "9999999999999999999999"]:
             with self.subTest(value=value):
@@ -110,12 +112,13 @@ class PriceSyncTest(unittest.TestCase):
                 self.assertEqual(self.query_one("SELECT target_cents FROM price_targets WHERE game_id=1")[0], 10000)
         # Even though $128 is below this new target, saving must not notify.
         client.post("/games/1/target", data={"target_price": "150.01", "user_id": "999"})
-        self.assertEqual(self.query_one("SELECT user_id, target_cents FROM price_targets WHERE game_id=1"), (1, 15001))
-        self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications")[0], 0)
+        self.assertEqual(self.query_one(f"SELECT user_id, target_cents FROM price_targets WHERE game_id=1 AND user_id={client.user_id}"), (client.user_id, 15001))
+        self.assertEqual(self.query_one("SELECT target_cents FROM price_targets WHERE game_id=1 AND user_id=1"), (10000,))
+        self.assertEqual(self.query_one(f"SELECT COUNT(*) FROM notifications WHERE user_id={client.user_id}")[0], 0)
         runner = app.test_cli_runner()
         result = runner.invoke(args=["sync-prices", "--scenario", "price-100"])
         self.assertEqual(result.exit_code, 0)
-        self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications")[0], 0)
+        self.assertEqual(self.query_one(f"SELECT COUNT(*) FROM notifications WHERE user_id={client.user_id}")[0], 0)
 
     def test_batch_sequence_replay_and_notification_snapshot(self):
         runner = app.test_cli_runner()
@@ -131,10 +134,10 @@ class PriceSyncTest(unittest.TestCase):
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys = ON")
         try:
-            # Force notification insertion to fail: its price and sync status must roll back too.
+            # Transaction-wide failures still roll back prices and sync status.
             db.execute("""
                 CREATE TRIGGER fail_notification BEFORE INSERT ON notifications
-                BEGIN SELECT RAISE(ABORT, 'test failure'); END
+                BEGIN SELECT RAISE(ROLLBACK, 'test failure'); END
             """)
             with self.assertRaises(sqlite3.IntegrityError):
                 sync_prices(db, DemoPriceSource(), scenario="price-100")

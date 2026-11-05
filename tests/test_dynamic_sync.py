@@ -34,7 +34,8 @@ class DynamicSyncTest(unittest.TestCase):
         self.runner = app.test_cli_runner()
         result = self.runner.invoke(args=["init-db"])
         self.assertEqual(result.exit_code, 0)
-        self.dynamic_id, _ = track_verified_game(get_db(), VerifiedSteamGame("555", "9999", "动态第五款", 12800))
+        self.owner_id = business_client().user_id
+        self.dynamic_id, _ = track_verified_game(get_db(), VerifiedSteamGame("555", "9999", "动态第五款", 12800), self.owner_id)
 
     def tearDown(self):
         self.ctx.pop()
@@ -42,7 +43,7 @@ class DynamicSyncTest(unittest.TestCase):
 
     def add_games(self, count):
         for index in range(count):
-            track_verified_game(get_db(), VerifiedSteamGame(str(100000 + index), str(200000 + index), f"游戏 {index}", 1499))
+            track_verified_game(get_db(), VerifiedSteamGame(str(100000 + index), str(200000 + index), f"游戏 {index}", 1499), self.owner_id)
 
     def payloads(self, games, changed=100):
         return [[quote(game, changed=changed) for game in games[start:start + SYNC_BATCH_SIZE]]
@@ -184,28 +185,28 @@ class DynamicSyncTest(unittest.TestCase):
         games = load_sync_games(get_db())
         result, _, _ = self.run_sync([[quote(game) for game in games[:-1]]], cli=True)
         self.assertEqual(result.exit_code, 0, repr(result.exception))
-        for expected in ["总追踪数 5", "收到报价数 4", "新增历史数 4", "缺失数 1", "通知数 0", "动态第五款", "9999"]:
+        for expected in ["用户追踪关系总数（真实）5", "去重后待同步游戏数 5", "收到报价数 4", "新增历史数 4", "缺失数 1", "通知数 0", "动态第五款", "9999"]:
             self.assertIn(expected, result.output)
         get_db().execute("UPDATE games SET steam_app_id=NULL WHERE id=101")
-        get_db().execute("UPDATE games SET is_tracked=0 WHERE id=102")
+        get_db().execute("DELETE FROM user_game_tracking WHERE game_id=102")
         get_db().execute("UPDATE games SET currency='EUR' WHERE id=103")
         get_db().execute("UPDATE games SET platform='GOG' WHERE id=104")
         get_db().commit()
         self.assertEqual([game.game_id for game in load_sync_games(get_db())], [self.dynamic_id])
         result, _, calls = self.run_sync([[]], cli=True)
         self.assertEqual(result.exit_code, 0)
-        for expected in ["总追踪数 4", "可同步数 1", "缺失数 1", "跳过", "3 款"]:
+        for expected in ["用户追踪关系总数（真实）4", "去重后待同步游戏数 1", "缺失数 1", "跳过", "3 款"]:
             self.assertIn(expected, result.output)
         self.assertEqual(parse_qs(urlparse(calls[0].args[0].full_url).query)["steamAppID"], ["9999"])
 
     def test_empty_selection_does_not_make_network_requests(self):
-        get_db().execute("UPDATE games SET is_tracked=0 WHERE data_source='cheapshark'")
+        get_db().execute("DELETE FROM user_game_tracking WHERE game_id IN (SELECT id FROM games WHERE data_source='cheapshark')")
         get_db().commit()
         with patch("adapters.cheapshark.urlopen") as opener:
             result = self.runner.invoke(args=["sync-prices", "--source", "cheapshark"])
             self.assertEqual(result.exit_code, 0)
             opener.assert_not_called()
-        self.assertIn("总追踪数 0", result.output)
+        self.assertIn("用户追踪关系总数（真实）0", result.output)
 
     def test_duplicate_target_mapping_and_unexpected_pagination_fail(self):
         games = load_sync_games(get_db())

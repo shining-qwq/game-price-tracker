@@ -13,7 +13,7 @@
       <span>价格观察站</span>
     </a>
     <nav class="header-nav" aria-label="主要导航">
-      <a href="{{ url_for('notifications') }}">站内通知</a>
+      <a href="{{ url_for('notifications') }}">{{ '我的通知' if current_user else '站内通知（需登录）' }}</a>
       {% if current_user %}
       <span>{{ current_user.username }}{% if current_user.role == 'admin' %} · 管理员{% endif %}</span>
       <form method="post" action="{{ url_for('logout') }}">
@@ -29,7 +29,7 @@
   </header>
   <main>
     {% include '_game_navigation.html' %}
-    <p class="helper">账号功能演示阶段：目标价和站内通知暂共用原演示用户数据，尚未按账号隔离。修改操作需要登录。</p>
+    <p class="helper">游戏档案与价格历史公开共享；追踪列表、目标价和通知仅属于你。取消追踪不影响其他用户。</p>
     {% block content %}{% endblock %}
   </main>
 </body>

@@ -1,4 +1,7 @@
+DROP TABLE IF EXISTS notification_retries;
 DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS user_game_tracking;
+DROP TABLE IF EXISTS schema_migrations;
 DROP TABLE IF EXISTS sync_status;
 DROP TABLE IF EXISTS price_targets;
 DROP TABLE IF EXISTS price_observations;
@@ -27,8 +30,23 @@ CREATE TABLE games (
     cheapshark_game_id TEXT,
     steam_app_id TEXT,
     demo_game_id INTEGER REFERENCES games(id),
-    is_tracked INTEGER NOT NULL DEFAULT 1 CHECK (is_tracked IN (0, 1)),
     accent TEXT NOT NULL
+);
+
+CREATE TABLE user_game_tracking (
+    user_id INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, game_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (game_id) REFERENCES games(id)
+);
+
+CREATE INDEX idx_tracking_game_user ON user_game_tracking(game_id, user_id);
+
+CREATE TABLE schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE price_observations (

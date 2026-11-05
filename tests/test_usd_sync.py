@@ -17,6 +17,7 @@ class UsdSyncTest(unittest.TestCase):
         self.runner = app.test_cli_runner()
         result = self.runner.invoke(args=["init-db"])
         self.assertEqual(result.exit_code, 0, repr(result.exception))
+        self.client = business_client()
 
     def tearDown(self):
         self.ctx.pop()
