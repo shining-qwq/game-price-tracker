@@ -1,17 +1,47 @@
 {% extends 'base.html' %}
-{% block title %}游戏列表 · 价格观察站{% endblock %}
+{% block title %}{{ '模拟游戏管理' if navigation_section == 'demo' else '真实报价游戏' }} · 价格观察站{% endblock %}
 {% block content %}
 {% for category, message in get_flashed_messages(with_categories=true) %}
 <p class="flash {{ category }}" role="status">{{ message }}</p>
 {% endfor %}
 <section class="panel">
+  {% if navigation_section == 'demo' %}
+  <h1 class="page-title">模拟游戏管理</h1>
+  <p class="helper">模拟数据固定为以下四款演示游戏，不通过外部搜索增加。模拟价格和历史全站共享，个人追踪状态互不影响。</p>
+  {% if current_user %}
+    {% if not demo_tracked_count %}<p>你暂未追踪模拟游戏，可以在下表选择固定的演示游戏。</p>{% endif %}
+  {% else %}
+  <p><a href="{{ url_for('login', next=url_for('game_category', source='demo')) }}">登录后管理个人追踪</a>；四款模拟游戏和共享价格可以公开浏览。</p>
+  {% endif %}
+  <div class="table-wrap">
+    <table aria-label="固定四款模拟游戏">
+      <thead><tr><th>游戏名称</th><th>游戏类型</th><th>当前模拟价格（USD）</th><th>我的追踪状态</th><th>详情</th><th>模拟追踪操作</th></tr></thead>
+      <tbody>
+        {% for item in demo_games %}
+        <tr data-game-id="{{ item.id }}">
+          <td>{{ item.title }}</td><td>{{ item.genre }}</td>
+          <td>{{ item.current_price_cents|money }}{% if item.current_price_cents is none %}（暂无模拟报价）{% endif %}</td>
+          <td>{% if not current_user %}登录后管理个人追踪{% elif item.is_tracked_by_current_user %}已追踪{% else %}未追踪{% endif %}</td>
+          <td><a href="{{ url_for('game_detail', game_id=item.id) }}">查看详情</a></td>
+          <td>
+            {% if current_user %}
+            <form method="post" action="{{ url_for('change_demo_tracking', game_id=item.id) }}">
+              {% include '_csrf.html' %}
+              <input type="hidden" name="action" value="{{ 'remove' if item.is_tracked_by_current_user else 'add' }}">
+              <input type="hidden" name="return_to" value="management">
+              <button type="submit">{{ '取消模拟追踪' if item.is_tracked_by_current_user else '加入模拟追踪' }}</button>
+            </form>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
   <h1 class="page-title">暂无已追踪游戏</h1>
-  <p class="helper">取消追踪不会删除旧档案。可以搜索游戏后重新加入。</p>
+  <p class="helper">你暂未追踪真实报价游戏，可以前往“搜索并加入游戏”。</p>
   <a href="{{ url_for('game_search') }}">搜索并加入游戏</a>
-  {% if public_demo_games %}
-  <h2>公开模拟示例</h2>
-  <p class="helper">这些是共享演示档案，打开详情后可加入你自己的模拟追踪。</p>
-  <ul>{% for item in public_demo_games %}<li><a href="{{ url_for('game_detail', game_id=item.id) }}">{{ item.title }}</a></li>{% endfor %}</ul>
   {% endif %}
 </section>
 {% endblock %}

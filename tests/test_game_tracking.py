@@ -223,7 +223,8 @@ class TrackingPageTest(unittest.TestCase):
             for current, other in [(demo_id, real_id), (real_id, demo_id)]:
                 page = self.client.get(f"/games/{current}")
                 self.assertEqual(page.status_code, 200)
-                self.assertIn(f'href="/games/{other}"'.encode(), page.data)
+                expected_link = f"/games/{other}" if current == demo_id else "/games?source=demo"
+                self.assertIn(f'href="{expected_link}"'.encode(), page.data)
 
     def test_detail_cancel_button_only_appears_for_active_real_games(self):
         real = self.client.get("/games/101")

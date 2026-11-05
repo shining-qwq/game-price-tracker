@@ -6,10 +6,12 @@ from adapters.contracts import PriceObservationEvent, PriceSourceError
 
 
 INT_MAX = 2147483647
+DEMO_GAME_IDS = (1, 2, 3, 4)
+LEGACY_SCENARIOS = frozenset({"price-drop", "late", "failure", "sequence"})
 
 
 def validate_scenario(scenario):
-    if scenario in {"price-drop", "late", "failure", "sequence"}:
+    if scenario in LEGACY_SCENARIOS:
         return
     match = re.fullmatch(r"price-([0-9]{1,10})", scenario)
     if match is None or int(match[1]) > INT_MAX:
@@ -21,12 +23,17 @@ class DemoPriceSource:
 
     name = "demo-steam-usd"
 
-    def __init__(self, event_id=None, observed_at=None):
+    def __init__(self, event_id=None, observed_at=None, *, game_id=1):
+        if type(game_id) is not int or game_id not in DEMO_GAME_IDS:
+            raise ValueError("请选择现有四款模拟游戏之一。")
+        self.game_id = game_id
         self.event_id = event_id
         self.observed_at = observed_at
 
     def fetch(self, scenario="price-drop"):
         validate_scenario(scenario)
+        if scenario in LEGACY_SCENARIOS and self.game_id != 1:
+            raise ValueError("固定兼容场景只支持模拟游戏 1，请为其他游戏使用 price-整数场景。")
         if scenario == "failure":
             raise PriceSourceError("模拟数据源暂时不可用")
 
@@ -34,7 +41,7 @@ class DemoPriceSource:
             price = int(scenario.removeprefix("price-")) * 100
             timestamp = self.observed_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
             return [PriceObservationEvent(
-                "demo-manual-" + (self.event_id or uuid4().hex), 1, price, timestamp,
+                "demo-manual-" + (self.event_id or uuid4().hex), self.game_id, price, timestamp,
             )]
 
         # These event IDs and times never change, including during a replay.

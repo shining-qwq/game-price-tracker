@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS notification_retries;
+DROP TABLE IF EXISTS admin_action_log;
 DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS user_game_tracking;
 DROP TABLE IF EXISTS schema_migrations;

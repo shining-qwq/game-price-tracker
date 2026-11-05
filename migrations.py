@@ -49,6 +49,11 @@ def upgrade_notification_retries(db):
         db.execute((Path(__file__).with_name("notification_retries.sql")).read_text(encoding="utf-8"))
 
 
+def upgrade_admin_action_log(db):
+    with migration_transaction(db):
+        db.execute((Path(__file__).with_name("admin_action_log.sql")).read_text(encoding="utf-8"))
+
+
 def upgrade_accounts(db):
     with migration_transaction(db):
         columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}

@@ -101,8 +101,8 @@ def _deliver_notification(db, values, attempted_at):
         return cursor.rowcount, 0
 
 
-def sync_prices(db, source, scenario="price-drop", now=None):
-    """Fetch from a source, then idempotently persist its observation events."""
+def sync_prices(db, source, scenario="price-drop", now=None, *, retry_game_id=None):
+    """Persist events idempotently; optionally scope pending retries to one game."""
     attempted_at = now or _utc_now()
 
     try:
@@ -140,7 +140,9 @@ def sync_prices(db, source, scenario="price-drop", now=None):
                FROM notification_retries nr
                WHERE EXISTS (SELECT 1 FROM user_game_tracking ugt
                              WHERE ugt.user_id=nr.user_id AND ugt.game_id=nr.game_id)
-               ORDER BY nr.observed_at, nr.user_id, nr.game_id, nr.source_event_id"""
+                 AND (? IS NULL OR nr.game_id=?)
+               ORDER BY nr.observed_at, nr.user_id, nr.game_id, nr.source_event_id""",
+            (retry_game_id, retry_game_id),
         ).fetchall()
         for row in pending:
             delivered, failed = _deliver_notification(db, tuple(row), completed_at)
@@ -212,6 +214,7 @@ def sync_prices(db, source, scenario="price-drop", now=None):
             """,
             (source.name, attempted_at, completed_at),
         )
-        pending_count = db.execute("SELECT COUNT(*) FROM notification_retries").fetchone()[0]
+        pending_count = db.execute("SELECT COUNT(*) FROM notification_retries WHERE ? IS NULL OR game_id=?",
+                                   (retry_game_id, retry_game_id)).fetchone()[0]
     return SyncResult(True, len(events), inserted, attempted_at, notifications=notification_count,
                       notification_failures=notification_failures, pending_notifications=pending_count)

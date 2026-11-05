@@ -8,7 +8,15 @@
   {% for item in navigation_games %}
   <a href="{{ url_for('game_detail', game_id=item.id) }}"{% if item.id == navigation_game_id %} class="active" aria-current="page"{% endif %}>{{ item.title }}</a>
   {% else %}
-  <span class="helper">{% if current_user %}暂无已追踪游戏，请到“搜索并加入游戏”添加。{% else %}登录后查看你的追踪列表；也可以先搜索游戏。{% endif %}</span>
+  <span class="helper">
+    {% if navigation_section == 'demo' %}
+      暂无已追踪的模拟游戏，请前往模拟游戏管理表选择固定游戏。
+    {% elif current_user %}
+      暂无已追踪的真实报价游戏，请到搜索页加入真实游戏。
+    {% else %}
+      登录后查看你的真实追踪列表；可以先到搜索页浏览真实游戏。
+    {% endif %}
+  </span>
   {% endfor %}
 </nav>
 {% endif %}

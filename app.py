@@ -1,5 +1,4 @@
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import re
@@ -7,15 +6,16 @@ import re
 import click
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
 
-from adapters.demo_price_source import DemoPriceSource, validate_scenario
+from adapters.demo_price_source import DemoPriceSource, DEMO_GAME_IDS, LEGACY_SCENARIOS
 from adapters.cheapshark import CheapSharkSource, MAX_SEARCH_LENGTH, validate_external_id
 from adapters.contracts import PriceSourceError
 from services.price_sync import sync_prices, sync_real_prices
 from services.game_tracking import track_verified_game, track_existing_game, stop_tracking
 from services.accounts import normalize_username, hash_password
+from services.sync_inputs import prepare_demo_sync
 from werkzeug.security import check_password_hash
 from migrations import (upgrade_game_identifiers, upgrade_accounts, upgrade_notification_retries,
-                        upgrade_user_tracking, migration_transaction)
+                        upgrade_user_tracking, upgrade_admin_action_log, migration_transaction)
 from security import configure_security, init_security, csrf_token, login_required, admin_required, safe_next
 
 
@@ -110,6 +110,7 @@ def initialize_database(db):
     upgrade_accounts(db)
     upgrade_notification_retries(db)
     upgrade_user_tracking(db)
+    upgrade_admin_action_log(db)
 
 
 @app.cli.command("init-db")
@@ -133,6 +134,7 @@ def upgrade_db_command():
                 upgrade_accounts(db)
                 upgrade_notification_retries(db)
                 upgrade_user_tracking(db)
+                upgrade_admin_action_log(db)
         except sqlite3.DatabaseError:
             raise click.ClickException("升级失败，失败事务已回滚；请检查用户名或外部标识冲突，不要清空数据库。") from None
     click.echo("数据库升级完成；演示用户、价格、订阅和通知已保留，旧人民币数据库未修改。")
@@ -162,33 +164,23 @@ def create_admin_command(username):
 @app.cli.command("sync-prices")
 @click.option("--source", type=click.Choice(["demo", "cheapshark"]), default="demo", show_default=True)
 @click.option("--event-id", default=None, help="模拟事件标识；重放同一事件时复用，不同观测使用不同标识。")
+@click.option("--game-id", default=None, help="模拟游戏 ID 1～4；省略时使用游戏 1。真实同步不接受此参数。")
 @click.option(
     "--scenario",
     default=None,
     help="模拟场景 price-N，N 为 0～2147483647 的整数美元；默认 price-drop。",
 )
-def sync_prices_command(source, event_id, scenario):
+def sync_prices_command(source, event_id, game_id, scenario):
     """Manually synchronize isolated demo or Steam/USD CheapShark quotes."""
     if source == "cheapshark":
-        if scenario is not None or event_id is not None:
-            raise click.UsageError("真实同步不能指定模拟场景或事件 ID。")
+        if scenario is not None or event_id is not None or game_id is not None:
+            raise click.UsageError("真实同步不能指定模拟游戏 ID、场景或事件 ID。")
     else:
         scenario = scenario or "price-drop"
         try:
-            validate_scenario(scenario)
+            adapter = prepare_demo_sync(get_db(), scenario, event_id, game_id=game_id if game_id is not None else 1)
         except ValueError as exc:
-            raise click.BadParameter(str(exc), param_hint="--scenario") from None
-        if event_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", event_id):
-            raise click.BadParameter("只支持 1～80 个字母、数字、下划线或短横线。", param_hint="--event-id")
-        if event_id is not None and not re.fullmatch(r"price-[0-9]+", scenario):
-            raise click.UsageError("--event-id 仅可与 price-整数 一起使用。")
-        latest = get_db().execute(
-            "SELECT MAX(observed_at) FROM price_observations WHERE game_id=1"
-        ).fetchone()[0]
-        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
-        if latest:
-            timestamp = max(timestamp, datetime.fromisoformat(latest) + timedelta(microseconds=1))
-        adapter = DemoPriceSource(event_id, timestamp.strftime("%Y-%m-%d %H:%M:%S.%f"))
+            raise click.UsageError(str(exc)) from None
     try:
         if source == "cheapshark":
             report = sync_real_prices(get_db())
@@ -198,7 +190,8 @@ def sync_prices_command(source, event_id, scenario):
                 return
             result = report.result
         else:
-            result = sync_prices(get_db(), adapter, scenario=scenario)
+            result = sync_prices(get_db(), adapter, scenario=scenario,
+                                 retry_game_id=None if scenario in LEGACY_SCENARIOS else adapter.game_id)
     except (sqlite3.DatabaseError, PriceSourceError, ValueError) as exc:
         raise click.ClickException(f"同步未完成：{exc}") from None
     if not result.success:
@@ -302,14 +295,12 @@ def navigation_context(section, game=None):
     db = get_db()
     user_id = g.user["id"] if g.user is not None else None
     demo = db.execute("""SELECT g.id,g.title FROM games g JOIN user_game_tracking ugt ON ugt.game_id=g.id
-                         WHERE g.data_source='demo' AND ugt.user_id=? ORDER BY g.id""", (user_id,)).fetchall()
+                         WHERE g.data_source='demo' AND g.id IN (1,2,3,4) AND ugt.user_id=? ORDER BY g.id""", (user_id,)).fetchall()
     real = db.execute("""SELECT g.id,g.title FROM games g JOIN user_game_tracking ugt ON ugt.game_id=g.id
                          WHERE g.data_source='cheapshark' AND ugt.user_id=? ORDER BY g.id""", (user_id,)).fetchall()
-    demo_id = demo[0]["id"] if demo else None
     real_id = real[0]["id"] if real else None
     if game is not None:
         if game["data_source"] == "demo":
-            demo_id = game["id"]
             partner = db.execute(
                 """SELECT g.id FROM games g JOIN user_game_tracking ugt ON ugt.game_id=g.id
                    WHERE g.demo_game_id=? AND g.data_source='cheapshark' AND ugt.user_id=? ORDER BY g.id LIMIT 1""",
@@ -320,12 +311,9 @@ def navigation_context(section, game=None):
         else:
             if any(item["id"] == game["id"] for item in real):
                 real_id = game["id"]
-            partner = db.execute("SELECT id FROM games WHERE id=? AND data_source='demo'", (game["demo_game_id"],)).fetchone()
-            if partner:
-                demo_id = partner["id"]
     return {
         "navigation_section": section,
-        "navigation_demo_url": url_for("game_detail", game_id=demo_id) if demo_id else url_for("game_category", source="demo"),
+        "navigation_demo_url": url_for("game_category", source="demo"),
         "navigation_real_url": url_for("game_detail", game_id=real_id) if real_id else url_for("game_category", source="cheapshark"),
         "navigation_games": demo if section == "demo" else real if section == "cheapshark" else [],
         "navigation_game_id": game["id"] if game is not None else None,
@@ -338,12 +326,28 @@ def game_category():
     if source not in ("demo", "cheapshark"):
         abort(400)
     context = navigation_context(source)
+    if source == "demo":
+        user_id = g.user["id"] if g.user is not None else None
+        demo_games = get_db().execute("""
+            SELECT g.id,g.title,g.genre,latest.price_cents AS current_price_cents,
+                   EXISTS (SELECT 1 FROM user_game_tracking ugt
+                           WHERE ugt.game_id=g.id AND ugt.user_id=?) AS is_tracked_by_current_user
+            FROM games g
+            LEFT JOIN price_observations latest ON latest.id=(
+                SELECT po.id FROM price_observations po WHERE po.game_id=g.id
+                ORDER BY po.observed_at DESC,po.id DESC LIMIT 1
+            )
+            WHERE g.data_source='demo' AND g.id IN (1,2,3,4)
+            ORDER BY g.id
+        """, (user_id,)).fetchall()
+        return render_template("game_category.html", demo_games=demo_games,
+                               demo_tracked_count=sum(row["is_tracked_by_current_user"] for row in demo_games),
+                               source_label="模拟数据 · USD", **context)
     first = context["navigation_games"][0] if context["navigation_games"] else None
     if first:
         return redirect(url_for("game_detail", game_id=first["id"]))
     return render_template(
         "game_category.html", **context,
-        public_demo_games=get_db().execute("SELECT id,title FROM games WHERE data_source='demo' ORDER BY id").fetchall() if source == "demo" else [],
         source_label="CheapShark · Steam · USD" if source == "cheapshark" else "模拟数据 · USD",
     )
 
@@ -529,7 +533,7 @@ def game_detail(game_id):
 def change_demo_tracking(game_id):
     """Local demo archives use an explicitly validated public route identifier."""
     db = get_db()
-    if db.execute("SELECT 1 FROM games WHERE id=? AND data_source='demo'", (game_id,)).fetchone() is None:
+    if game_id not in DEMO_GAME_IDS or db.execute("SELECT 1 FROM games WHERE id=? AND data_source='demo'", (game_id,)).fetchone() is None:
         abort(404)
     action = request.form.get("action")
     if action not in {"add", "remove"}:
@@ -540,12 +544,15 @@ def change_demo_tracking(game_id):
         else:
             db.execute("DELETE FROM user_game_tracking WHERE user_id=? AND game_id=?", (g.user["id"], game_id))
     flash("已加入你的模拟追踪。" if action == "add" else "已取消你的模拟追踪，目标价与通知保留。", "success")
-    return redirect(url_for("game_detail", game_id=game_id) if action == "add" else url_for("game_category", source="demo"), code=303)
+    # The submitted value selects a fixed destination, never a redirect URL.
+    to_management = request.form.get("return_to") == "management" or action == "remove"
+    destination = url_for("game_category", source="demo") if to_management else url_for("game_detail", game_id=game_id)
+    return redirect(destination, code=303)
 
 
 @app.after_request
 def prevent_private_page_caching(response):
-    if request.endpoint in {"game_detail", "notifications", "game_search", "game_category"}:
+    if request.endpoint in {"game_detail", "notifications", "game_search", "game_category", "admin_sync_page"}:
         response.headers["Cache-Control"] = "private, no-store"
         response.vary.add("Cookie")
     return response
@@ -600,6 +607,10 @@ def notifications():
         (g.user["id"],),
     ).fetchall()
     return render_template("notifications.html", notifications=rows, **navigation_context(None))
+
+
+from admin_sync import register_admin_sync
+register_admin_sync(app, get_db, navigation_context)
 
 
 if __name__ == "__main__":

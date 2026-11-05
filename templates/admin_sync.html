@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% block title %}同步控制台 · 价格观察站{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1 class="page-title">管理员同步控制台</h1>
+  <p class="helper">以下是全站汇总。同步更新共享价格，只向当前仍追踪且达标的用户生成个人通知。所有时间为 UTC。</p>
+  {% for category, message in get_flashed_messages(with_categories=true) %}
+  <p class="flash {{ category }}" role="status">{{ message }}</p>
+  {% endfor %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>来源</th><th>最近尝试</th><th>最近成功</th><th>最近错误摘要</th><th>已追踪游戏（去重）</th><th>历史记录</th></tr></thead>
+      <tbody>{% for item in sources %}<tr>
+        <td>{{ item.label }}</td>
+        <td>{{ item.status.last_attempt_at if item.status else '尚无记录' }}</td>
+        <td>{{ item.status.last_success_at or '尚无成功记录' if item.status else '尚无记录' }}</td>
+        <td>{{ item.error or '无' }}</td><td>{{ item.tracked_games }}</td><td>{{ item.history_count }}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+<div class="content-grid admin-sync-actions">
+  <section class="panel">
+    <h2>同步真实报价</h2>
+    <p class="helper">只查询至少一人追踪的 Steam/USD 游戏，每款只采集一次。无报价保留旧价；网络失败保留旧价格和上次成功时间。</p>
+    <form method="post" action="{{ url_for('admin_sync_cheapshark') }}">
+      {% include '_csrf.html' %}
+      <button type="submit">同步一次 CheapShark 报价</button>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>模拟价格演示</h2>
+    <p class="helper">从现有四款模拟游戏中选择目标，金额为整数美元（0～{{ max_demo_dollars }}），以整数美分保存。模拟价格全站共享；事件 ID 全局唯一，重放必须保持同一游戏和价格。</p>
+    <form method="post" action="{{ url_for('admin_sync_demo') }}" class="auth-form">
+      {% include '_csrf.html' %}
+      <label for="demo_game_id">目标模拟游戏</label>
+      <select id="demo_game_id" name="game_id" required>
+        {% for item in demo_games %}<option value="{{ item.id }}">{{ item.title }}</option>{% endfor %}
+      </select>
+      <label for="scenario">场景</label>
+      <input id="scenario" name="scenario" value="price-128" maxlength="16" placeholder="price-128" required>
+      <label for="event_id">事件 ID（1～80 位字母、数字、下划线或短横线）</label>
+      <input id="event_id" name="event_id" value="{{ default_event_id }}" maxlength="80" autocomplete="off" required>
+      <button type="submit">同步这条模拟观测</button>
+    </form>
+  </section>
+</div>
+<section class="panel history-panel">
+  <h2>四款模拟游戏的共享状态</h2>
+  <p class="helper">仅统计已记录数据；当前价、最低价与历史全站共享，追踪用户数按个人关联汇总。</p>
+  <div class="table-wrap"><table aria-label="模拟游戏共享状态">
+    <thead><tr><th>游戏（内部 ID）</th><th>当前模拟价</th><th>已记录最低价</th><th>历史记录数</th><th>追踪用户数</th></tr></thead>
+    <tbody>{% for item in demo_statistics %}<tr>
+      <td>{{ item.title }}（{{ item.id }}）</td><td>{{ item.current_price_cents|money }}</td>
+      <td>{{ item.lowest_price_cents|money }}</td><td>{{ item.history_count }}</td><td>{{ item.follower_count }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+<p class="helper">操作会等待同步完成后返回。双击同一表单使用相同模拟事件 ID；真实快照也有稳定 ID。结果页刷新不会再次提交。不同事件 ID 代表新的观测；并发操作由数据库事务串行写入，忙时请稍后重试。</p>
+<section class="panel history-panel">
+  <h2>最近 20 次管理员操作</h2>
+  <p class="helper">“执行中或未完成”表示结果尚未写入，可能是仍在处理或上次请求中断，请先核对数据。</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>编号</th><th>管理员</th><th>动作</th><th>来源</th><th>结果</th><th>摘要</th><th>开始 / 完成（UTC）</th></tr></thead>
+    <tbody>{% for item in actions %}<tr>
+      <td>{{ item.id }}</td><td>{{ item.username }}（ID {{ item.user_id }}）</td>
+      <td>{{ '模拟同步' if item.action_type == 'sync_demo' else '真实同步' }}</td>
+      <td>{{ item.source }}</td>
+      <td>{{ {'running':'执行中或未完成','success':'成功','failure':'失败'}[item.outcome] }}</td>
+      <td>{{ item.summary }}</td><td>{{ item.created_at }} / {{ item.finished_at or '未完成' }}</td>
+    </tr>{% else %}<tr><td colspan="7">暂无管理员操作。</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}
