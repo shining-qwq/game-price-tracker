@@ -1,3 +1,4 @@
+DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS sync_status;
 DROP TABLE IF EXISTS price_targets;
 DROP TABLE IF EXISTS price_observations;
@@ -17,6 +18,7 @@ CREATE TABLE games (
     platform TEXT NOT NULL,
     region TEXT NOT NULL,
     currency TEXT NOT NULL,
+    data_source TEXT NOT NULL DEFAULT 'demo',
     accent TEXT NOT NULL
 );
 
@@ -26,6 +28,7 @@ CREATE TABLE price_observations (
     game_id INTEGER NOT NULL,
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
     observed_at TEXT NOT NULL,
+    source_updated_at INTEGER,
     FOREIGN KEY (game_id) REFERENCES games (id)
 );
 
@@ -39,7 +42,7 @@ CREATE TABLE sync_status (
 CREATE TABLE price_targets (
     user_id INTEGER NOT NULL,
     game_id INTEGER NOT NULL,
-    target_cents INTEGER NOT NULL CHECK (target_cents >= 0),
+    target_cents INTEGER NOT NULL CHECK (target_cents > 0),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, game_id),
     FOREIGN KEY (user_id) REFERENCES users (id),

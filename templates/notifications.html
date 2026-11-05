@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}站内通知 · 价格观察站{% endblock %}
+{% block content %}
+<section class="panel history-panel">
+  <div class="section-heading">
+    <h1 style="font-size: 32px">站内通知</h1>
+    <span class="record-count">{{ notifications|length }} 条 · 演示用户</span>
+  </div>
+  <p class="helper">仅同步时从高于目标价降至目标价或以下才通知。持续低价不重复提醒，涨回后可再次触发。触发时间为价格观测时间。</p>
+  {% if notifications %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>游戏</th><th>来源</th><th>触发价格（USD）</th><th>当时目标价（USD）</th><th>触发时间</th></tr></thead>
+      <tbody>
+        {% for item in notifications %}
+        <tr>
+          <td><a href="{{ url_for('game_detail', game_id=item.game_id) }}">{{ item.title }}</a></td>
+          <td>{{ 'CheapShark / Steam' if item.data_source == 'cheapshark' else '模拟数据' }}</td>
+          <td>{{ item.trigger_price_cents|money }}</td>
+          <td>{{ item.target_cents|money }}</td>
+          <td>{{ item.observed_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p>还没有通知。先到游戏详情页设置目标价，后续同步达标时会在这里提醒。</p>
+  {% endif %}
+</section>
+{% endblock %}

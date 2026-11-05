@@ -3,8 +3,12 @@
 {% block title %}{{ game.title }} · 价格观察站{% endblock %}
 
 {% block content %}
+<nav class="game-switcher" aria-label="选择数据来源">
+  <a href="{{ url_for('game_detail', game_id=game.id - 100 if is_real else game.id) }}">模拟数据（USD）</a>
+  <a href="{{ url_for('game_detail', game_id=game.id if is_real else game.id + 100) }}">CheapShark 真实报价（USD）</a>
+</nav>
 <nav class="game-switcher" aria-label="切换演示游戏">
-  <span class="switcher-label">演示游戏</span>
+  <span class="switcher-label">{{ '真实报价' if is_real else '演示游戏' }}</span>
   {% for item in games %}
     <a href="{{ url_for('game_detail', game_id=item.id) }}"
        {% if item.id == game.id %}class="active" aria-current="page"{% endif %}>
@@ -22,9 +26,9 @@
   </div>
 
   <div class="price-ticket" aria-label="当前价格">
-    <p>当前模拟价</p>
+    <p>{{ '当前采集价（USD）' if is_real else '当前模拟价（USD）' }}</p>
     <strong>{{ game.current_price_cents|money }}</strong>
-    <span>观测于 {{ game.current_observed_at }}</span>
+    <span>{{ '采集于 ' ~ game.current_observed_at ~ ' UTC' if game.current_observed_at else '暂无已记录报价；缺失不代表免费' }}</span>
     <span class="sync-time">
       上次成功同步：
       {% if sync_status and sync_status.last_success_at %}
@@ -35,6 +39,9 @@
     </span>
   </div>
 </section>
+{% if is_real %}
+<p class="helper">来源：<a href="https://www.cheapshark.com/">CheapShark</a> 的 Steam 美元报价。地区未由源提供，价格可能延迟；不做地区推断或汇率换算。真实历史从首次成功采集起记录，与模拟订阅、通知和历史分开。</p>
+{% endif %}
 
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% if messages %}
@@ -46,12 +53,12 @@
   {% endif %}
 {% endwith %}
 
-{% if reminder_active %}
+{% if notification_count %}
 <aside class="reminder" aria-label="降价提醒">
   <span class="reminder-icon" aria-hidden="true">✓</span>
   <div>
-    <strong>到达你的目标价了</strong>
-    <p>当前价 {{ game.current_price_cents|money }}，已不高于目标价 {{ game.target_cents|money }}。</p>
+    <strong>已收到 {{ notification_count }} 条降价通知</strong>
+    <p><a href="{{ url_for('notifications') }}">查看触发价格和时间</a></p>
   </div>
 </aside>
 {% endif %}
@@ -67,13 +74,13 @@
         <span class="saved-target">当前 {{ game.target_cents|money }}</span>
       {% endif %}
     </div>
-    <p class="helper">当最新记录价格不高于目标价时，这里会出现站内提醒。</p>
+    <p class="helper">保存目标价只更新订阅。后续同步时，价格从高于目标价降至目标价或以下才通知；持续低价不重复提醒，涨回目标价以上后再次达标可再提醒。</p>
     <form method="post" action="{{ url_for('set_target', game_id=game.id) }}" class="target-form">
-      <label for="target_price">目标价（人民币）</label>
+      <label for="target_price">目标价（美元 USD）</label>
       <div class="input-row">
-        <span class="currency-symbol">¥</span>
-        <input id="target_price" name="target_price" type="number" min="0" step="0.01"
-               value="{% if game.target_cents is not none %}{{ '%.2f'|format(game.target_cents / 100) }}{% endif %}"
+        <span class="currency-symbol">$</span>
+        <input id="target_price" name="target_price" type="number" min="0.01" step="0.01"
+               value="{% if game.target_cents is not none %}{{ game.target_cents // 100 }}.{{ '%02d'|format(game.target_cents % 100) }}{% endif %}"
                placeholder="例如 20.00" required>
         <button type="submit">保存目标价</button>
       </div>
@@ -82,9 +89,9 @@
 
   <section class="panel low-panel">
     <p class="kicker">已记录数据</p>
-    <h2>历史最低价</h2>
+    <h2>已记录最低价</h2>
     <strong class="lowest-price">{{ game.lowest_price_cents|money }}</strong>
-    <p class="helper">只从下方 {{ history|length }} 次模拟观测中计算，不代表平台真实历史最低价。</p>
+    <p class="helper">只从下方 {{ history|length }} 次{{ '真实' if is_real else '模拟' }}观测中计算，不代表平台完整历史最低价。{{ '首次真实采集前没有历史数据。' if is_real else '' }}</p>
   </section>
 </div>
 
@@ -115,6 +122,7 @@
           <td class="number"><strong>{{ row.price_cents|money }}</strong></td>
         </tr>
         {% endfor %}
+        {% if not history %}<tr><td colspan="4">暂无记录，请先手动同步此来源。</td></tr>{% endif %}
       </tbody>
     </table>
   </div>

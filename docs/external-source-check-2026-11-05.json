@@ -1,0 +1,50 @@
+{
+  "checked_at_utc": "2026-11-05T09:11:37.573224+00:00",
+  "provider": "CheapShark",
+  "purpose": "Read-only feasibility check; not application price history",
+  "documentation": "https://apidocs.cheapshark.com/",
+  "timeout_seconds": 10,
+  "authentication": "Public API; no API key; descriptive User-Agent required",
+  "store_check": {
+    "url": "https://www.cheapshark.com/api/1.0/stores",
+    "http_status": 200,
+    "storeID": "1",
+    "storeName": "Steam",
+    "isActive": 1
+  },
+  "results": [
+    {
+      "requested_title": "Stardew Valley",
+      "requested_steam_app_id": "413150",
+      "url": "https://www.cheapshark.com/api/1.0/deals?storeID=1&steamAppID=413150&pageSize=1",
+      "http_status": 200,
+      "returned_fields": {
+        "title": "Stardew Valley",
+        "gameID": "150036",
+        "steamAppID": "413150",
+        "storeID": "1",
+        "dealID": "nnV4CAy%2FSNFdauueGk5i77t%2B8%2F1DlMAY567iPs2l654%3D",
+        "salePrice": "14.99",
+        "normalPrice": "14.99",
+        "lastChange": 1791485272
+      },
+      "price_state": "paid",
+      "price_cents": 1499,
+      "currency_from_documentation": "USD",
+      "currency_in_response": null,
+      "region_in_response": null
+    },
+    {
+      "requested_title": "Dota 2",
+      "requested_steam_app_id": "570",
+      "url": "https://www.cheapshark.com/api/1.0/deals?storeID=1&steamAppID=570&pageSize=1",
+      "http_status": 200,
+      "response": [],
+      "price_state": "missing",
+      "price_cents": null,
+      "matching_deals": 0
+    }
+  ],
+  "decision": "Keep CN/CNY demo. Region unverified; provider documents USD only.",
+  "business_database_written": false
+}

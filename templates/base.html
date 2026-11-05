@@ -12,7 +12,8 @@
       <span class="brand-mark" aria-hidden="true">⌁</span>
       <span>价格观察站</span>
     </a>
-    <span class="demo-badge">模拟数据 · 仅供演示</span>
+    <a href="{{ url_for('notifications') }}">站内通知</a>
+    <span class="demo-badge">来源：{{ source_label|default('模拟 / CheapShark 独立记录 · USD') }}</span>
   </header>
   <main>{% block content %}{% endblock %}</main>
 </body>
