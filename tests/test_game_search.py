@@ -1,3 +1,4 @@
+from tests.helpers import business_client
 import sqlite3
 import unittest
 from pathlib import Path
@@ -78,7 +79,7 @@ class GameSearchPageTest(unittest.TestCase):
         app.config.update(TESTING=True, DATABASE=self.database_path)
         result = app.test_cli_runner().invoke(args=["init-db"])
         self.assertEqual(result.exit_code, 0, result.output)
-        self.client = app.test_client()
+        self.client = business_client()
 
     def tearDown(self):
         self.database_path.unlink(missing_ok=True)

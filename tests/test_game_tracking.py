@@ -1,3 +1,4 @@
+from tests.helpers import business_client
 import sqlite3
 import unittest
 from pathlib import Path
@@ -114,7 +115,7 @@ class TrackingPageTest(unittest.TestCase):
         self.ctx.push()
         self.runner = app.test_cli_runner()
         self.assertEqual(self.runner.invoke(args=["init-db"]).exit_code, 0)
-        self.client = app.test_client()
+        self.client = business_client()
 
     def tearDown(self):
         self.ctx.pop()

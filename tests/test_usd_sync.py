@@ -1,3 +1,4 @@
+from tests.helpers import business_client
 import sqlite3
 import unittest
 from unittest.mock import patch
@@ -62,7 +63,7 @@ class UsdSyncTest(unittest.TestCase):
         self.assertEqual(self.sync_rows([row]).inserted, 0)
         self.assertEqual(get_db().execute("SELECT COUNT(*) FROM notifications").fetchone()[0], 0)
         self.assertEqual(get_db().execute("SELECT MIN(price_cents) FROM price_observations WHERE game_id=1").fetchone()[0], 12800)
-        client = app.test_client()
+        client = business_client()
         client.post("/games/101/target", data={"target_price": "10.00", "user_id": "999"})
         self.assertEqual(self.sync_rows([{**row, "salePrice": None, "lastChange": 101}]).inserted, 0)
         self.assertEqual(self.sync_rows([]).inserted, 0)
@@ -88,7 +89,7 @@ class UsdSyncTest(unittest.TestCase):
         self.assertEqual(get_db().execute("SELECT COUNT(*) FROM price_observations WHERE game_id=101").fetchone()[0], 1)
 
     def test_empty_real_page_has_no_simulated_history(self):
-        page = app.test_client().get("/games/101")
+        page = business_client().get("/games/101")
         self.assertEqual(page.status_code, 200)
         self.assertIn("暂无已记录报价".encode(), page.data)
         self.assertIn("0 次观测".encode(), page.data)

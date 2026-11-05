@@ -1,5 +1,26 @@
 """Repeatable, transactional upgrades for the USD database only."""
 
+
+def upgrade_accounts(db):
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+        for name, definition in [
+            ("username", "TEXT"),
+            ("username_normalized", "TEXT"),
+            ("password_hash", "TEXT"),
+            ("role", "TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))"),
+            ("created_at", "TEXT"),
+        ]:
+            if name not in columns:
+                db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+        for row in db.execute("SELECT id FROM users WHERE username_normalized IS NULL").fetchall():
+            username = "demo" if row[0] == 1 else f"legacy_{row[0]}"
+            db.execute("UPDATE users SET username=?, username_normalized=? WHERE id=?", (username, username, row[0]))
+        db.execute("UPDATE users SET created_at=CURRENT_TIMESTAMP WHERE created_at IS NULL")
+        db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username
+                      ON users(username_normalized COLLATE NOCASE)""")
+
 # Explicit legacy associations; never infer a counterpart by adding/subtracting IDs.
 LEGACY_GAMES = {
     101: ("413150", 1),

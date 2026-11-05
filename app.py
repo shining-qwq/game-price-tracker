@@ -12,7 +12,10 @@ from adapters.cheapshark import CheapSharkSource, MAX_SEARCH_LENGTH, validate_ex
 from adapters.contracts import PriceSourceError
 from services.price_sync import sync_prices, sync_real_prices
 from services.game_tracking import track_verified_game, stop_tracking
-from migrations import upgrade_game_identifiers
+from services.accounts import normalize_username, hash_password
+from werkzeug.security import check_password_hash
+from migrations import upgrade_game_identifiers, upgrade_accounts
+from security import configure_security, init_security, csrf_token, login_required, admin_required, safe_next
 
 
 DEMO_USER_ID = 1
@@ -20,9 +23,9 @@ DEMO_USER_ID = 1
 app = Flask(__name__)
 app.config.update(
     DATABASE=Path(app.instance_path) / "price_tracker_usd.sqlite3",
-    SECRET_KEY="dev-only-demo-key",
 )
 Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+configure_security(app)
 
 
 def get_db():
@@ -39,6 +42,9 @@ def close_db(_error=None):
     db = g.pop("db", None)
     if db is not None:
         db.close()
+
+
+init_security(app, get_db)
 
 
 def seed_demo_data(db):
@@ -97,6 +103,7 @@ def initialize_database(db):
     seed_demo_data(db)
     db.commit()
     upgrade_game_identifiers(db)
+    upgrade_accounts(db)
 
 
 @app.cli.command("init-db")
@@ -115,9 +122,31 @@ def upgrade_db_command():
     else:
         try:
             upgrade_game_identifiers(db)
+            upgrade_accounts(db)
         except sqlite3.DatabaseError:
-            raise click.ClickException("升级失败，改动已回滚；请检查重复外部标识，不要清空数据库。") from None
-    click.echo("外部游戏标识与唯一索引已就绪；美元价格、订阅和通知已保留，旧人民币数据库未修改。")
+            raise click.ClickException("升级失败，失败事务已回滚；请检查用户名或外部标识冲突，不要清空数据库。") from None
+    click.echo("数据库升级完成；演示用户、价格、订阅和通知已保留，旧人民币数据库未修改。")
+
+
+@app.cli.command("create-admin")
+@click.option("--username", required=True, help="创建或提升的管理员用户名。")
+def create_admin_command(username):
+    """Create/promote an admin and set a new password via hidden input only."""
+    try:
+        username, normalized = normalize_username(username)
+        password = click.prompt("管理员密码", hide_input=True, confirmation_prompt="再次输入管理员密码")
+        password_hash = hash_password(password)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    db = get_db()
+    with db:
+        db.execute("""
+            INSERT INTO users(display_name,username,username_normalized,password_hash,role,created_at)
+            VALUES (?,?,?,?,'admin',CURRENT_TIMESTAMP)
+            ON CONFLICT(username_normalized COLLATE NOCASE) DO UPDATE SET
+                password_hash=excluded.password_hash, role='admin'
+        """, (username, username, normalized, password_hash))
+    click.echo(f"管理员 {username} 已就绪，密码已通过隐藏输入设置。")
 
 
 @app.cli.command("sync-prices")
@@ -198,6 +227,58 @@ def format_money(cents):
 @app.route("/")
 def index():
     return redirect(url_for("game_detail", game_id=1))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    username = request.form.get("username", "") if request.method == "POST" else ""
+    if request.method == "POST":
+        try:
+            username, normalized = normalize_username(username)
+            password_hash = hash_password(request.form.get("password", ""))
+            with get_db() as db:
+                db.execute("""
+                    INSERT INTO users(display_name,username,username_normalized,password_hash,role,created_at)
+                    VALUES (?,?,?,?,'user',CURRENT_TIMESTAMP)
+                """, (username, username, normalized, password_hash))
+        except ValueError as exc:
+            error = str(exc)
+        except sqlite3.IntegrityError:
+            error = "该用户名已被使用（不区分大小写）。"
+        else:
+            flash("注册成功，请登录。", "success")
+            return redirect(url_for("login"), code=303)
+    return render_template("register.html", error=error, username=username, **navigation_context(None))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    destination = safe_next(request.form.get("next") if request.method == "POST" else request.args.get("next"))
+    if request.method == "POST":
+        try:
+            _, normalized = normalize_username(request.form.get("username", ""))
+        except ValueError:
+            normalized = ""
+        user = get_db().execute("SELECT id,password_hash FROM users WHERE username_normalized=?", (normalized,)).fetchone()
+        password = request.form.get("password", "")
+        if (user is None or not user["password_hash"] or not 8 <= len(password) <= 128
+                or not check_password_hash(user["password_hash"], password)):
+            error = "用户名或密码错误。"
+        else:
+            session.clear()
+            session["user_id"] = user["id"]
+            csrf_token()  # Rotate the token at the authentication boundary.
+            return redirect(destination or url_for("index"), code=303)
+    return render_template("login.html", error=error, next_path=destination or "", **navigation_context(None))
+
+
+@app.post("/logout")
+@login_required
+def logout():
+    session.clear()
+    return redirect(url_for("index"), code=303)
 
 
 def navigation_context(section, game=None):
@@ -283,6 +364,7 @@ def game_search():
 
 
 @app.post("/games/track")
+@login_required
 def track_game():
     try:
         # Only the external identifier is read; all other form fields are ignored.
@@ -313,6 +395,7 @@ def track_game():
 
 
 @app.post("/games/untrack")
+@login_required
 def untrack_game():
     game_id = None
     try:
@@ -407,6 +490,7 @@ def game_detail(game_id):
 
 
 @app.post("/games/<int:game_id>/target")
+@login_required
 def set_target(game_id):
     db = get_db()
     game_exists = db.execute("SELECT 1 FROM games WHERE id = ?", (game_id,)).fetchone()
@@ -456,4 +540,4 @@ def notifications():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()

@@ -52,6 +52,27 @@ a { color: inherit; }
 }
 
 .header-nav a:hover { color: var(--blue); }
+.header-nav { flex-wrap: wrap; }
+.header-nav span { color: var(--muted); font-size: 13px; }
+.nav-logout { padding: 6px 10px; font-size: 13px; }
+.auth-panel { max-width: 560px; margin: 24px auto; }
+.auth-form { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
+.auth-form label { font-size: 14px; font-weight: 700; }
+.auth-form input { flex: none; padding-left: 14px; }
+.auth-form button { margin-top: 10px; }
+.password-field { position: relative; }
+.password-field input { display: block; width: 100%; padding-right: 48px; }
+.password-field input::-ms-reveal { display: none; }
+.auth-form .password-toggle {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 40px; height: 40px;
+  margin: 0; padding: 8px; color: var(--muted); background: transparent;
+  border-radius: 7px;
+}
+.auth-form .password-toggle[hidden] { display: none; }
+.auth-form .password-toggle:hover { color: var(--ink); background: #edf0f8; }
+.password-toggle .eye-slash { display: none; }
+.password-toggle[aria-pressed="true"] .eye-slash { display: block; }
 
 .brand {
   display: inline-flex;

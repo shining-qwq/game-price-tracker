@@ -1,3 +1,4 @@
+from tests.helpers import business_client
 import io
 import json
 import sqlite3
@@ -98,7 +99,7 @@ class DynamicSyncTest(unittest.TestCase):
         self.assertEqual(source.missing_games, [games[-1]])
         self.assertEqual(get_db().execute("SELECT price_cents FROM price_observations WHERE game_id=? ORDER BY observed_at DESC LIMIT 1", (self.dynamic_id,)).fetchone()[0], 1499)
         self.assertEqual(get_db().execute("SELECT MIN(price_cents) FROM price_observations WHERE game_id=?", (games[0].game_id,)).fetchone()[0], 0)
-        page = app.test_client().get(f"/games/{games[0].game_id}")
+        page = business_client().get(f"/games/{games[0].game_id}")
         self.assertIn(b"$0.00", page.data)
         self.assertIn("不代表永久免费".encode(), page.data)
         # A present row without salePrice is still missing, never a free price.
@@ -159,7 +160,7 @@ class DynamicSyncTest(unittest.TestCase):
                 self.assertEqual(self.snapshot(), before)
 
     def test_dynamic_game_baseline_notifications_and_old_snapshot(self):
-        client = app.test_client()
+        client = business_client()
         client.post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
         games = load_sync_games(get_db())
         for changed, price, expected_notices in [(100, "128.00", 0), (101, "100.00", 1),

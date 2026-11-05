@@ -7,7 +7,12 @@ DROP TABLE IF EXISTS users;
 
 CREATE TABLE users (
     id INTEGER PRIMARY KEY,
-    display_name TEXT NOT NULL
+    display_name TEXT NOT NULL,
+    username TEXT,
+    username_normalized TEXT,
+    password_hash TEXT,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE games (

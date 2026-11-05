@@ -81,12 +81,14 @@
         {% set tracked_game = tracked_by_cheapshark.get(item.game_id) or tracked_by_steam.get(item.steam_app_id) %}
         {% if tracked_game %}
         <form method="post" action="{{ url_for('untrack_game') }}">
+          {% include '_csrf.html' %}
           <input type="hidden" name="steam_app_id" value="{{ tracked_game.steam_app_id }}">
           <button type="submit" class="tracking-active" aria-pressed="true" title="点击取消追踪">已追踪</button>
         </form>
         <p class="helper">再次点击“已追踪”可取消，历史记录会保留。</p>
         {% elif item.steam_app_id %}
         <form method="post" action="{{ url_for('track_game') }}">
+          {% include '_csrf.html' %}
           <input type="hidden" name="cheapshark_game_id" value="{{ item.game_id }}">
           <button type="submit">加入追踪</button>
         </form>

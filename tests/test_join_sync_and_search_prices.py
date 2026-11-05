@@ -1,3 +1,4 @@
+from tests.helpers import business_client
 import io
 import json
 import unittest
@@ -23,7 +24,7 @@ class JoinSyncAndSearchPriceTest(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         self.assertEqual(app.test_cli_runner().invoke(args=["init-db"]).exit_code, 0)
-        self.client = app.test_client()
+        self.client = business_client()
 
     def tearDown(self):
         self.ctx.pop()

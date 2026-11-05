@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}注册 · 价格观察站{% endblock %}
+{% block content %}
+<section class="panel auth-panel">
+  <h1 class="page-title">注册普通用户</h1>
+  <p class="helper">用户名为 3～24 位英文字母、数字或下划线，字母开头，不区分大小写。密码 8～128 个字符。</p>
+  {% if error %}<p class="flash error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" class="auth-form">
+    {% include '_csrf.html' %}
+    <label for="username">用户名</label>
+    <input id="username" name="username" value="{{ username }}" minlength="3" maxlength="24" autocomplete="username" required>
+    {% set password_autocomplete = 'new-password' %}
+    {% include '_password_field.html' %}
+    <button type="submit">注册</button>
+  </form>
+  <p class="helper">已有账号？<a href="{{ url_for('login') }}">登录</a></p>
+</section>
+{% endblock %}

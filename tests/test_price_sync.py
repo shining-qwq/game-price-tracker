@@ -1,3 +1,4 @@
+from tests.helpers import business_client
 import sqlite3
 import unittest
 from pathlib import Path
@@ -31,7 +32,7 @@ class PriceSyncTest(unittest.TestCase):
             db.close()
 
     def test_price_drop_is_idempotent_and_triggers_reminder(self):
-        client = app.test_client()
+        client = business_client()
         before = client.get("/games/1")
         self.assertIn("$128.00".encode(), before.data)
         self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications")[0], 0)
@@ -53,7 +54,7 @@ class PriceSyncTest(unittest.TestCase):
         result = app.test_cli_runner().invoke(args=["sync-prices", "--scenario", "late"])
         self.assertEqual(result.exit_code, 0, result.output)
 
-        page = app.test_client().get("/games/1")
+        page = business_client().get("/games/1")
         self.assertIn("$128.00".encode(), page.data)
         self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications")[0], 0)
 
@@ -95,13 +96,13 @@ class PriceSyncTest(unittest.TestCase):
         self.assertEqual(self.query_one(
             "SELECT group_concat(trigger_price_cents) FROM (SELECT trigger_price_cents FROM notifications ORDER BY observed_at)"
         )[0], "10000,9000")
-        page = app.test_client().get("/notifications?user_id=999")
+        page = business_client().get("/notifications?user_id=999")
         self.assertEqual(page.status_code, 200)
         for text in ["星露谷物语", "$100.00", "$90.00", "模拟数据"]:
             self.assertIn(text.encode(), page.data)
 
     def test_target_validation_and_fixed_user_without_immediate_notification(self):
-        client = app.test_client()
+        client = business_client()
         for value in ["0", "-1", "12.345", "100.000", "NaN", "Infinity", "1e2", "", "9999999999999999999999"]:
             with self.subTest(value=value):
                 response = client.post("/games/1/target", data={"target_price": value}, follow_redirects=True)
@@ -122,7 +123,7 @@ class PriceSyncTest(unittest.TestCase):
             result = runner.invoke(args=["sync-prices", "--scenario", "sequence"])
             self.assertEqual(result.exit_code, 0, repr(result.exception))
         self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications")[0], 2)
-        app.test_client().post("/games/1/target", data={"target_price": "80.00"})
+        business_client().post("/games/1/target", data={"target_price": "80.00"})
         self.assertEqual(self.query_one("SELECT COUNT(*) FROM notifications WHERE target_cents=10000")[0], 2)
 
     def test_notification_constraint_and_transaction_rollback(self):

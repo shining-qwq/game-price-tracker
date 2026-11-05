@@ -14,11 +14,22 @@
     </a>
     <nav class="header-nav" aria-label="主要导航">
       <a href="{{ url_for('notifications') }}">站内通知</a>
+      {% if current_user %}
+      <span>{{ current_user.username }}{% if current_user.role == 'admin' %} · 管理员{% endif %}</span>
+      <form method="post" action="{{ url_for('logout') }}">
+        {% include '_csrf.html' %}
+        <button type="submit" class="nav-logout">退出</button>
+      </form>
+      {% else %}
+      <a href="{{ url_for('login') }}">登录</a>
+      <a href="{{ url_for('register') }}">注册</a>
+      {% endif %}
     </nav>
     <span class="demo-badge">来源：{{ source_label|default('模拟 / CheapShark 独立记录 · USD') }}</span>
   </header>
   <main>
     {% include '_game_navigation.html' %}
+    <p class="helper">账号功能演示阶段：目标价和站内通知暂共用原演示用户数据，尚未按账号隔离。修改操作需要登录。</p>
     {% block content %}{% endblock %}
   </main>
 </body>
