@@ -47,6 +47,9 @@ def sync_prices(db, source, scenario="price-drop", now=None):
     with db:
         db.execute("BEGIN IMMEDIATE")
         for event in sorted(events, key=lambda item: (item.observed_at, item.event_id)):
+            tracked = db.execute("SELECT is_tracked FROM games WHERE id=?", (event.game_id,)).fetchone()
+            if tracked is not None and not tracked["is_tracked"]:
+                continue
             existing = db.execute(
                 "SELECT game_id, price_cents FROM price_observations WHERE source_event_id=?",
                 (event.event_id,),

@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}游戏列表 · 价格观察站{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1 class="page-title">暂无已追踪游戏</h1>
+  <p class="helper">取消追踪不会删除旧档案。可以搜索游戏后重新加入。</p>
+  <a href="{{ url_for('game_search') }}">搜索并加入游戏</a>
+</section>
+{% endblock %}

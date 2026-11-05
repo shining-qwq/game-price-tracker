@@ -19,6 +19,10 @@ CREATE TABLE games (
     region TEXT NOT NULL,
     currency TEXT NOT NULL,
     data_source TEXT NOT NULL DEFAULT 'demo',
+    cheapshark_game_id TEXT,
+    steam_app_id TEXT,
+    demo_game_id INTEGER REFERENCES games(id),
+    is_tracked INTEGER NOT NULL DEFAULT 1 CHECK (is_tracked IN (0, 1)),
     accent TEXT NOT NULL
 );
 

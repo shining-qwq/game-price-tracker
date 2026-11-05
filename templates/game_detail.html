@@ -3,19 +3,9 @@
 {% block title %}{{ game.title }} · 价格观察站{% endblock %}
 
 {% block content %}
-<nav class="game-switcher" aria-label="选择数据来源">
-  <a href="{{ url_for('game_detail', game_id=game.id - 100 if is_real else game.id) }}">模拟数据（USD）</a>
-  <a href="{{ url_for('game_detail', game_id=game.id if is_real else game.id + 100) }}">CheapShark 真实报价（USD）</a>
-</nav>
-<nav class="game-switcher" aria-label="切换演示游戏">
-  <span class="switcher-label">{{ '真实报价' if is_real else '演示游戏' }}</span>
-  {% for item in games %}
-    <a href="{{ url_for('game_detail', game_id=item.id) }}"
-       {% if item.id == game.id %}class="active" aria-current="page"{% endif %}>
-      {{ item.title }}
-    </a>
-  {% endfor %}
-</nav>
+{% if is_real and not game.is_tracked %}
+<p class="search-message">此游戏已取消追踪，以下是保留的旧档案，暂停采集和通知。可在搜索页重新加入。</p>
+{% endif %}
 
 <section class="hero" style="--game-accent: {{ game.accent }}">
   <div class="hero-copy">
@@ -41,6 +31,7 @@
 </section>
 {% if is_real %}
 <p class="helper">来源：<a href="https://www.cheapshark.com/">CheapShark</a> 的 Steam 美元报价。地区未由源提供，价格可能延迟；不做地区推断或汇率换算。真实历史从首次成功采集起记录，与模拟订阅、通知和历史分开。</p>
+<p class="helper">Steam AppID：{{ game.steam_app_id or '尚未验证' }} · CheapShark gameID：{{ game.cheapshark_game_id or '待加入验证时补齐' }}。{% if not counterpart_id %}此游戏没有对应的模拟档案。当前批量同步仍只处理原四款，新加入游戏暂不参与采集。{% endif %}</p>
 {% endif %}
 
 {% with messages = get_flashed_messages(with_categories=true) %}

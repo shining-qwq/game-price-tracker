@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
@@ -29,6 +30,21 @@ class GameSearchResult:
     cheapest_cents: int | None
 
 
+@dataclass(frozen=True)
+class VerifiedSteamGame:
+    cheapshark_game_id: str
+    steam_app_id: str
+    title: str
+    steam_price_cents: int
+
+
+def validate_external_id(value):
+    """Canonical ASCII decimal IDs avoid aliases such as 001 vs 1."""
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", value):
+        raise ValueError("游戏标识必须是 1～20 位、无前导零的正整数。")
+    return value
+
+
 def parse_price(value):
     if value is None or value == "":
         return None
@@ -47,8 +63,9 @@ def parse_price(value):
 class CheapSharkSource:
     name = "cheapshark-steam-usd"
 
-    def __init__(self):
+    def __init__(self, steam_games=None):
         self.missing_games = []
+        self.steam_games = dict(STEAM_GAMES if steam_games is None else steam_games)
 
     def search_by_title(self, title):
         """Search CheapShark's game catalog without changing local state."""
@@ -106,9 +123,58 @@ class CheapSharkSource:
             )
         return results
 
+    def get_verified_steam_game(self, game_id):
+        """Recheck a specific catalog game and its Steam offer on the server."""
+        game_id = validate_external_id(game_id)
+        request = Request(
+            f"{API_BASE_URL}/games?" + urlencode({"id": game_id}),
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+                payload = json.load(response)
+        except HTTPError as exc:
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After", "未提供") if exc.headers else "未提供"
+                raise PriceSourceError(f"CheapShark 限流，请等待 Retry-After={retry_after} 后重试加入。") from None
+            raise PriceSourceError(f"CheapShark 查询返回 HTTP {exc.code}，未加入追踪。") from None
+        except (URLError, OSError, TimeoutError):
+            raise PriceSourceError("CheapShark 网络、代理或超时错误，未加入追踪。") from None
+        except (ValueError, TypeError):
+            raise PriceSourceError("CheapShark 游戏查询响应格式错误，未加入追踪。") from None
+
+        if not isinstance(payload, dict) or not isinstance(payload.get("info"), dict):
+            raise PriceSourceError("游戏不存在或 CheapShark 响应格式错误，未加入追踪。")
+        info = payload["info"]
+        title = info.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise PriceSourceError("CheapShark 未提供有效游戏标题，未加入追踪。")
+        steam_id = info.get("steamAppID")
+        if steam_id in (None, ""):
+            raise PriceSourceError("该游戏未提供 Steam AppID，不能加入 Steam 追踪。")
+        try:
+            steam_id = validate_external_id(steam_id)
+        except ValueError:
+            raise PriceSourceError("CheapShark 返回无效 Steam AppID，未加入追踪。") from None
+        deals = payload.get("deals")
+        if not isinstance(deals, list) or any(not isinstance(deal, dict) for deal in deals):
+            raise PriceSourceError("CheapShark 报价列表格式错误，未加入追踪。")
+        steam_deals = [deal for deal in deals if deal.get("storeID") == "1"]
+        if not steam_deals:
+            raise PriceSourceError("该游戏当前没有 Steam 商店报价，不能加入追踪。")
+        if len(steam_deals) != 1:
+            raise PriceSourceError("Steam 报价不唯一，未加入追踪。")
+        # Game lookup uses price; search's cheapest and cheapestPriceEver are ignored.
+        cents = parse_price(steam_deals[0].get("price"))
+        if cents is None:
+            raise PriceSourceError("Steam 报价缺失，不能加入追踪；缺失不代表免费。")
+        return VerifiedSteamGame(game_id, steam_id, title.strip(), cents)
+
     def fetch(self, scenario=None):
         self.missing_games = []
-        params = urlencode({"storeID": "1", "steamAppID": ",".join(STEAM_GAMES), "pageSize": "60"})
+        if not self.steam_games:
+            return []
+        params = urlencode({"storeID": "1", "steamAppID": ",".join(self.steam_games), "pageSize": "60"})
         request = Request(
             f"{API_BASE_URL}/deals?{params}",
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
@@ -133,7 +199,7 @@ class CheapSharkSource:
         events = []
         seen = set()
         for row in rows:
-            if not isinstance(row, dict) or row.get("storeID") != "1" or row.get("steamAppID") not in STEAM_GAMES:
+            if not isinstance(row, dict) or row.get("storeID") != "1" or row.get("steamAppID") not in self.steam_games:
                 raise PriceSourceError("CheapShark 返回了不匹配的游戏或商店。")
             app_id = row["steamAppID"]
             if app_id in seen:
@@ -149,7 +215,7 @@ class CheapSharkSource:
             # do not pretend the deal ID itself identifies a price change.
             key = f"steam:USD:{app_id}:{changed}:{price}"
             event_id = "cheapshark-" + hashlib.sha256(key.encode()).hexdigest()
-            events.append(PriceObservationEvent(event_id, STEAM_GAMES[app_id], price, observed_at, changed))
+            events.append(PriceObservationEvent(event_id, self.steam_games[app_id], price, observed_at, changed))
         priced = {event.game_id for event in events}
-        self.missing_games = [app_id for app_id, game_id in STEAM_GAMES.items() if game_id not in priced]
+        self.missing_games = [app_id for app_id, game_id in self.steam_games.items() if game_id not in priced]
         return events

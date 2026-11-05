@@ -300,6 +300,9 @@ h2 { margin: 0; font-size: 24px; line-height: 1.25; letter-spacing: -.025em; }
 .result-card dt { color: var(--muted); font-size: 12px; font-weight: 700; }
 .result-card dd { margin: 3px 0 0; overflow-wrap: anywhere; }
 .result-card .helper { margin-bottom: 0; }
+.category-switcher { margin-top: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.tracking-active { color: var(--mint-ink); background: var(--mint); border: 1px solid #a9d9be; }
+.tracking-active:hover { color: var(--danger); background: #fff0f0; }
 .missing-value { color: var(--danger); font-size: 13px; font-weight: 650; }
 
 .saved-target,

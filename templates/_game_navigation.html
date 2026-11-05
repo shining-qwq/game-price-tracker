@@ -1,0 +1,14 @@
+<nav class="game-switcher category-switcher" aria-label="功能分类">
+  <a href="{{ navigation_demo_url }}"{% if navigation_section == 'demo' %} class="active" aria-current="page"{% endif %}>模拟数据</a>
+  <a href="{{ navigation_real_url }}"{% if navigation_section == 'cheapshark' %} class="active" aria-current="page"{% endif %}>真实报价</a>
+  <a href="{{ url_for('game_search') }}"{% if navigation_section == 'search' %} class="active" aria-current="page"{% endif %}>搜索并加入游戏</a>
+</nav>
+{% if navigation_section in ('demo', 'cheapshark') %}
+<nav class="game-switcher" aria-label="游戏列表">
+  {% for item in navigation_games %}
+  <a href="{{ url_for('game_detail', game_id=item.id) }}"{% if item.id == navigation_game_id %} class="active" aria-current="page"{% endif %}>{{ item.title }}</a>
+  {% else %}
+  <span class="helper">暂无已追踪游戏，请到“搜索并加入游戏”添加。</span>
+  {% endfor %}
+</nav>
+{% endif %}

@@ -14,7 +14,7 @@ python -m venv .venv
 
 如果系统 Python 已安装 Flask，也可以直接使用 `python -m flask ...`。下文以 `python` 为例，请使用安装了 Flask 的同一个解释器。
 
-`upgrade-db` 在美元数据库不存在时创建数据，已存在则保留。`init-db` 会清空并重建美元数据库，包括已有真实价格、订阅和通知，只有需要重置时才执行。
+`upgrade-db` 在美元数据库不存在时创建数据，已存在则以事务增加外部 ID 字段、模拟关联、追踪状态和唯一索引，可以重复执行；不会清空已有美元数据，也不会重新开启已取消的追踪。升级失败会回滚并报错，请检查冲突，不要用 `init-db` 绕过。`init-db` 会清空并重建美元数据库，包括已有真实价格、订阅和通知，只有需要重置时才执行。
 
 - 模拟详情：<http://127.0.0.1:5000/games/1>（游戏 ID 1～4）
 - 真实详情：<http://127.0.0.1:5000/games/101>（游戏 ID 101～104）
@@ -23,13 +23,79 @@ python -m venv .venv
 
 详情页顶部可以切换模拟/真实来源。模拟启动和测试不需要联网或密钥。
 
+第一栏在详情页、搜索页和通知页始终按“模拟数据 / 真实报价 / 搜索并加入游戏”排列，只切换高亮，不改变顺序。第二栏仅在模拟或真实分类中显示该分类的游戏名称；真实分类只显示正在追踪的游戏。全部取消后，真实分类仍然可以打开，并提示搜索加入游戏。
+
 ## 游戏名称搜索
 
 游戏搜索页只在用户输入名称并点击“搜索”后请求 CheapShark 的游戏目录；空关键词不会发起请求，也不实现输入时自动补全或全量目录抓取。搜索依赖外部网络，可能因超时、代理或 CheapShark 限流而暂时失败，但不会读取或修改本地价格数据库。
 
-结果中的 `gameID` 是 CheapShark 游戏标识，`Steam AppID` 仅在数据源确实提供时显示。`cheapest` 被标注为“CheapShark 当前跨商店最低报价（USD）”，它可能来自非 Steam 商店，不能视为 Steam 当前价格。当前轮次只展示候选结果，尚不能把搜索结果加入本地追踪。
+结果中的 `gameID` 是 CheapShark 游戏标识，`Steam AppID` 仅在数据源确实提供时显示。`cheapest` 被标注为“CheapShark 当前跨商店最低报价（USD）”，它可能来自非 Steam 商店，不能视为 Steam 当前价格。搜索 GET 只显示结果；点击“加入追踪”才会验证并创建档案。
 
 已知限制：CheapShark 搜索结果不保证每项都有 Steam AppID；价格统一为 USD；请求过于频繁可能收到 429；网络错误、无结果和异常响应只显示提示，不会生成游戏或价格记录。
+
+## 把搜索结果加入追踪（第二轮）
+
+已有数据库先执行升级，不需要清库：
+
+```powershell
+python -m flask --app app upgrade-db
+# 同一命令可再次执行，已有价格、目标价和通知保留
+python -m flask --app app upgrade-db
+python -m flask --app app run --debug
+```
+
+1. 打开 <http://127.0.0.1:5000/games/search>，搜索例如 `Hades`，选择有 Steam AppID 的候选。
+2. 点击“加入追踪”。表单以 POST 提交唯一的 `cheapshark_game_id`，不提交标题或价格。即使手动伪造其他表单字段，后端也不读取它们。
+3. 后端调用官方 `games?id=...` 查询，以响应的 `info.title`、`info.steamAppID` 验证游戏，要求 `deals` 中存在 `storeID=1` 且有有效 `price` 的报价。其他商店报价、搜索结果 `cheapest` 和历史低价均不用于加入验证或写入 Steam 价格。
+4. 验证通过后创建 CheapShark / Steam / USD 真实档案并重定向详情页。新档案没有价格历史、不生成目标价或通知，页面显示“暂无已记录报价”。验证得到的 Steam 价格本轮不保存，避免把加入操作伪装成同步。
+5. 搜索时会根据本地 CheapShark gameID 或 Steam AppID 标记“已追踪”，原四款只有 Steam AppID 时也能识别。点击“已追踪”以 POST 取消追踪；未追踪的游戏显示“加入追踪”。取消请求只读取已保存的稳定 Steam AppID，不需要外部 API；返回搜索结果时会重新执行原关键词查询。重新加入仍需验证，并恢复原档案，不创建副本。遇到两个外部 ID 冲突会提示而不是覆盖。
+
+取消追踪通过 `games.is_tracked=0` 保存，保留游戏档案、价格历史、目标价和旧通知；直接访问旧详情仍可查看，但明确标注暂停状态。恢复后使用原内部 ID、历史和目标价。重复取消幂等，不会删除数据。取消与重新加入只改变追踪状态，本身不生成价格或通知。
+
+本轮没有扩展批量同步的游戏范围：`sync-prices --source cheapshark` 仍只处理原四款中开启追踪的游戏。取消的原游戏不再请求报价，全部取消时不发送外部请求；已发出的旧请求即使返回，写入前也会再检查追踪状态，不记录暂停游戏的新价格或通知。新加入的其他游戏可以进入详情、设置目标价，但暂时没有价格采集或降价通知。这是下一轮同步改造的边界。
+
+升级在 `games` 中增加 `cheapshark_game_id`、`steam_app_id` 和可空的 `demo_game_id`。真实来源下，CheapShark ID 和 Steam AppID 各有一个数据库唯一索引，事务写入防止重复请求创建两个档案。原四款真实游戏保留原内部 ID 与数据，仅补齐代码中已知的 Steam AppID、显式模拟关联；原先未知的 CheapShark gameID 保持 NULL，在“加入追踪”服务端验证后补齐，不联网猜测或按标题配对。
+
+新游戏简介和类型显示“外部数据未提供”，配色使用固定界面默认值。详情页根据存储的关联显示模拟切换；没有模拟副本的新游戏不生成对应链接，不再使用内部 ID 加减 100。
+
+### 手动验收
+
+- 连续运行两次升级，确认原四款真实详情、目标价、价格历史和通知仍在。
+- 搜索并加入不在原四款中的 Steam 游戏，检查标题来自 API、两个外部 ID、Steam/USD 来源，以及空历史提示。
+- 返回搜索结果，确认按钮变成“已追踪”；点击后取消，按钮恢复“加入追踪”。再次加入进入同一个详情地址，数据库仍只有一条档案。
+- 取消前后对比旧历史、目标价与通知数量，确认未删除。重复取消不会反向开启；升级再次执行也不会重开。
+- 从不同分类来回切换，确认第一栏三项顺序固定，第二栏只显示对应游戏。全部取消后真实分类有清晰空状态。
+- 加入已有的星露谷等原游戏，确认进入原 101～104 档案，不生成副本。
+- 没有 Steam AppID 的候选不显示加入按钮；没有 Steam 报价的游戏在后端拒绝。
+- 断网后点击加入应显示错误；已有详情和价格不变。浏览器检查手机宽度和成功/失败提示。
+
+### 直接检查数据库
+
+数据库仍为 `instance/price_tracker_usd.sqlite3`。用 SQLite 工具执行：
+
+```sql
+-- 检查真实档案及外部 ID
+SELECT id, title, data_source, platform, currency,
+       cheapshark_game_id, steam_app_id, demo_game_id, is_tracked
+FROM games WHERE data_source='cheapshark' ORDER BY id;
+
+-- is_tracked=1 为已追踪，0 为已取消；取消后档案仍然存在
+
+-- 用刚加入游戏的 CheapShark ID 替换 这里的ID；重复点击后仍应为 1
+SELECT COUNT(*) FROM games
+WHERE data_source='cheapshark' AND cheapshark_game_id='这里的ID';
+
+-- 新游戏应为 0 条价格，原游戏历史数量保持不变
+SELECT g.id, g.title, COUNT(p.id) AS observations
+FROM games g LEFT JOIN price_observations p ON p.game_id=g.id
+WHERE g.data_source='cheapshark' GROUP BY g.id ORDER BY g.id;
+
+-- 检查唯一约束及外键；foreign_key_check 应无结果
+PRAGMA index_list(games);
+PRAGMA foreign_key_check;
+```
+
+不安装 SQLite 工具也可用 `python scripts/inspect_db.py --game-id 新内部ID` 检查该游戏空历史；详情页 URL 最后的数字是内部 ID，不是 CheapShark gameID。
 
 ## 人民币旧库与美元新库
 
@@ -148,5 +214,7 @@ WHERE source_event_id='demo-manual-step-90'; -- 重放后仍为 1
 - `adapters/demo_price_source.py`：任意模拟金额与固定场景。
 - `adapters/cheapshark.py`：HTTP 请求、字段校验、真实快照标识。
 - `services/price_sync.py`：事务、幂等、旧事件防护、跨阈值通知。
+- `services/game_tracking.py`：服务端验证后的游戏入库、外部 ID 去重。
+- `migrations.py`：可重复执行的外部 ID 字段和唯一索引升级。
 - `schema.sql` 与 `notifications.sql`：表结构和唯一约束。
 - `templates/`：详情页和站内通知页。

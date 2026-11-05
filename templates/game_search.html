@@ -6,7 +6,10 @@
 <section class="panel search-panel">
   <p class="kicker">CheapShark 游戏目录</p>
   <h1 class="page-title">搜索游戏</h1>
-  <p class="helper">点击搜索后才会请求 CheapShark。当前只展示候选结果，不会写入本地数据库或加入价格追踪。</p>
+  <p class="helper">搜索只展示候选结果。“加入追踪”会重新验证游戏与 Steam 报价，成功后创建真实游戏档案；本轮不采集新游戏的历史价格。</p>
+  {% for category, message in get_flashed_messages(with_categories=true) %}
+    <p class="search-message {{ category }}" role="status">{{ message }}</p>
+  {% endfor %}
 
   <form method="get" action="{{ url_for('game_search') }}" class="search-form" role="search">
     <label for="game-query">游戏名称</label>
@@ -60,7 +63,21 @@
           </div>
           {% endif %}
         </dl>
-        <p class="helper">本轮只展示搜索结果；尚未加入本地追踪。</p>
+        {% set tracked_game = tracked_by_cheapshark.get(item.game_id) or tracked_by_steam.get(item.steam_app_id) %}
+        {% if tracked_game %}
+        <form method="post" action="{{ url_for('untrack_game') }}">
+          <input type="hidden" name="steam_app_id" value="{{ tracked_game.steam_app_id }}">
+          <button type="submit" class="tracking-active" aria-pressed="true" title="点击取消追踪">已追踪</button>
+        </form>
+        <p class="helper">再次点击“已追踪”可取消，历史记录会保留。</p>
+        {% elif item.steam_app_id %}
+        <form method="post" action="{{ url_for('track_game') }}">
+          <input type="hidden" name="cheapshark_game_id" value="{{ item.game_id }}">
+          <button type="submit">加入追踪</button>
+        </form>
+        {% else %}
+        <p class="helper">缺少 Steam AppID，暂不能加入追踪。</p>
+        {% endif %}
       </article>
     {% endfor %}
   </div>
