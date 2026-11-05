@@ -8,7 +8,7 @@ import click
 from flask import Flask, abort, flash, g, redirect, render_template, request, url_for
 
 from adapters.demo_price_source import DemoPriceSource, validate_scenario
-from adapters.cheapshark import CheapSharkSource
+from adapters.cheapshark import CheapSharkSource, MAX_SEARCH_LENGTH
 from adapters.contracts import PriceSourceError
 from services.price_sync import sync_prices
 
@@ -171,6 +171,33 @@ def format_money(cents):
 @app.route("/")
 def index():
     return redirect(url_for("game_detail", game_id=1))
+
+
+@app.get("/games/search")
+def game_search():
+    submitted = "q" in request.args
+    query = request.args.get("q", "").strip()
+    results = []
+    search_error = None
+
+    if submitted and query:
+        if len(query) > MAX_SEARCH_LENGTH:
+            search_error = f"搜索关键词不能超过 {MAX_SEARCH_LENGTH} 个字符。"
+        else:
+            try:
+                results = CheapSharkSource().search_by_title(query)
+            except (PriceSourceError, ValueError) as exc:
+                search_error = str(exc)
+
+    return render_template(
+        "game_search.html",
+        query=query,
+        submitted=submitted,
+        results=results,
+        search_error=search_error,
+        max_search_length=MAX_SEARCH_LENGTH,
+        source_label="CheapShark 游戏搜索 · USD",
+    )
 
 
 @app.route("/games/<int:game_id>")

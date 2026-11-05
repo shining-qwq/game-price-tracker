@@ -38,6 +38,21 @@ a { color: inherit; }
   gap: 20px;
 }
 
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-nav a {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.header-nav a:hover { color: var(--blue); }
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -267,7 +282,25 @@ h1 {
 
 .kicker { color: var(--blue); }
 h2 { margin: 0; font-size: 24px; line-height: 1.25; letter-spacing: -.025em; }
+.page-title { color: var(--ink); font-size: clamp(36px, 6vw, 60px); }
 .helper { margin: 10px 0 20px; color: var(--muted); font-size: 14px; }
+
+.search-panel { margin-top: 14px; }
+.search-form { max-width: 720px; margin-top: 24px; }
+.search-form label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 750; }
+.search-form input { padding-left: 14px; }
+.search-message { margin: 20px 0 0; padding: 13px 15px; color: var(--muted); background: #f6f7fb; border: 1px solid var(--line); border-radius: 10px; }
+.search-message.error { color: var(--danger); background: #fff0f0; border-color: #edb7b7; }
+.search-results { margin-top: 24px; }
+.result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; margin-top: 18px; }
+.result-card { padding: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 10px 30px rgba(34, 39, 77, .045); }
+.result-card h3 { margin: 0; font-size: 20px; }
+.result-card dl { margin: 18px 0 0; }
+.result-card dl div { padding: 10px 0; border-top: 1px solid #eceef4; }
+.result-card dt { color: var(--muted); font-size: 12px; font-weight: 700; }
+.result-card dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.result-card .helper { margin-bottom: 0; }
+.missing-value { color: var(--danger); font-size: 13px; font-weight: 650; }
 
 .saved-target,
 .record-count {
@@ -341,6 +374,8 @@ tbody tr:first-child { background: #fbfaff; }
 
 @media (max-width: 760px) {
   .site-header, main { width: min(100% - 28px, 1120px); }
+  .site-header { align-items: flex-start; flex-wrap: wrap; }
+  .header-nav { order: 3; width: 100%; }
   .demo-badge { font-size: 11px; }
   .hero { grid-template-columns: 1fr; gap: 32px; min-height: 0; padding: 34px 25px 42px; border-radius: 18px; }
   .price-ticket { max-width: 330px; }

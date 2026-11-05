@@ -1,4 +1,5 @@
-"""Steam-only USD quotes. No API key is required by CheapShark."""
+"""CheapShark search plus Steam-only USD quotes. No API key is required."""
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -12,6 +13,20 @@ from adapters.contracts import PriceObservationEvent, PriceSourceError
 
 STEAM_GAMES = {"413150": 101, "367520": 102, "1426210": 103, "1868140": 104}
 TIMEOUT_SECONDS = 10
+SEARCH_LIMIT = 20
+MAX_SEARCH_LENGTH = 80
+API_BASE_URL = "https://www.cheapshark.com/api/1.0"
+USER_AGENT = "GamePriceTracker-Learning/0.1"
+
+
+@dataclass(frozen=True)
+class GameSearchResult:
+    """Validated fields returned by CheapShark's title search."""
+
+    game_id: str
+    title: str
+    steam_app_id: str | None
+    cheapest_cents: int | None
 
 
 def parse_price(value):
@@ -35,11 +50,69 @@ class CheapSharkSource:
     def __init__(self):
         self.missing_games = []
 
+    def search_by_title(self, title):
+        """Search CheapShark's game catalog without changing local state."""
+        query = title.strip()
+        if not query:
+            return []
+        if len(query) > MAX_SEARCH_LENGTH:
+            raise ValueError(f"搜索关键词不能超过 {MAX_SEARCH_LENGTH} 个字符。")
+
+        params = urlencode({"title": query, "limit": SEARCH_LIMIT})
+        request = Request(
+            f"{API_BASE_URL}/games?{params}",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+                rows = json.load(response)
+        except HTTPError as exc:
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After", "未提供") if exc.headers else "未提供"
+                raise PriceSourceError(
+                    f"CheapShark 搜索请求过于频繁，请等待 Retry-After={retry_after} 后重试。"
+                ) from None
+            raise PriceSourceError(f"CheapShark 搜索返回 HTTP {exc.code}，请稍后重试。") from None
+        except (URLError, OSError, TimeoutError):
+            raise PriceSourceError("CheapShark 搜索网络、代理或超时错误，请稍后重试。") from None
+        except (ValueError, TypeError):
+            raise PriceSourceError("CheapShark 搜索响应格式错误。") from None
+
+        if not isinstance(rows, list):
+            raise PriceSourceError("CheapShark 搜索响应不是游戏列表。")
+
+        results = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise PriceSourceError("CheapShark 搜索结果格式错误。")
+            game_id = row.get("gameID")
+            result_title = row.get("external")
+            steam_app_id = row.get("steamAppID")
+            if not isinstance(game_id, str) or not game_id.isdigit():
+                raise PriceSourceError("CheapShark 搜索结果缺少有效 gameID。")
+            if not isinstance(result_title, str) or not result_title.strip():
+                raise PriceSourceError("CheapShark 搜索结果缺少有效标题。")
+            if steam_app_id in (None, ""):
+                steam_app_id = None
+            elif not isinstance(steam_app_id, str) or not steam_app_id.isdigit():
+                raise PriceSourceError("CheapShark 搜索结果包含无效 Steam AppID。")
+            results.append(
+                GameSearchResult(
+                    game_id=game_id,
+                    title=result_title.strip(),
+                    steam_app_id=steam_app_id,
+                    cheapest_cents=parse_price(row.get("cheapest")),
+                )
+            )
+        return results
+
     def fetch(self, scenario=None):
         self.missing_games = []
         params = urlencode({"storeID": "1", "steamAppID": ",".join(STEAM_GAMES), "pageSize": "60"})
-        request = Request("https://www.cheapshark.com/api/1.0/deals?" + params,
-                          headers={"User-Agent": "GamePriceTracker-Learning/0.1", "Accept": "application/json"})
+        request = Request(
+            f"{API_BASE_URL}/deals?{params}",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
         try:
             with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
                 if int(response.headers.get("X-Total-Page-Count", "1")) > 1:

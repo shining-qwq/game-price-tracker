@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}搜索游戏 · 价格观察站{% endblock %}
+
+{% block content %}
+<section class="panel search-panel">
+  <p class="kicker">CheapShark 游戏目录</p>
+  <h1 class="page-title">搜索游戏</h1>
+  <p class="helper">点击搜索后才会请求 CheapShark。当前只展示候选结果，不会写入本地数据库或加入价格追踪。</p>
+
+  <form method="get" action="{{ url_for('game_search') }}" class="search-form" role="search">
+    <label for="game-query">游戏名称</label>
+    <div class="input-row">
+      <input id="game-query" name="q" type="search" maxlength="{{ max_search_length }}"
+             value="{{ query }}" placeholder="例如 Hades 或 Stardew Valley">
+      <button type="submit">搜索</button>
+    </div>
+  </form>
+
+  {% if search_error %}
+    <p class="search-message error" role="alert">{{ search_error }}</p>
+  {% elif submitted and not query %}
+    <p class="search-message">请输入游戏名称后再搜索，空关键词不会请求外部 API。</p>
+  {% elif submitted and not results %}
+    <p class="search-message">没有找到与“{{ query }}”匹配的游戏。</p>
+  {% endif %}
+</section>
+
+{% if results %}
+<section class="search-results" aria-labelledby="search-results-title">
+  <div class="section-heading">
+    <div>
+      <p class="kicker">搜索结果</p>
+      <h2 id="search-results-title">找到 {{ results|length }} 个候选游戏</h2>
+    </div>
+  </div>
+  <div class="result-grid">
+    {% for item in results %}
+      <article class="result-card">
+        <h3>{{ item.title }}</h3>
+        <dl>
+          <div>
+            <dt>稳定标识</dt>
+            <dd>CheapShark gameID <code>{{ item.game_id }}</code></dd>
+          </div>
+          <div>
+            <dt>Steam AppID</dt>
+            <dd>
+              {% if item.steam_app_id %}
+                <code>{{ item.steam_app_id }}</code>
+              {% else %}
+                <span class="missing-value">未提供，不能假装为 Steam 游戏</span>
+              {% endif %}
+            </dd>
+          </div>
+          {% if item.cheapest_cents is not none %}
+          <div>
+            <dt>CheapShark 当前跨商店最低报价（USD）</dt>
+            <dd><strong>{{ item.cheapest_cents|money }}</strong></dd>
+          </div>
+          {% endif %}
+        </dl>
+        <p class="helper">本轮只展示搜索结果；尚未加入本地追踪。</p>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}
