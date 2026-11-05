@@ -1,7 +1,24 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 
-from adapters.contracts import PriceSourceError
+from adapters.contracts import PriceSourceError, PriceSyncGame
+from adapters.cheapshark import CheapSharkSource
+
+
+def load_sync_games(db):
+    """Select tracked Steam/USD games; the adapter never receives the database."""
+    rows = db.execute(
+        """
+        SELECT id, steam_app_id, title FROM games
+        WHERE data_source='cheapshark' AND is_tracked=1
+          AND platform='Steam' AND currency='USD'
+        ORDER BY id
+        """
+    ).fetchall()
+    return [PriceSyncGame(row["id"], row["steam_app_id"], row["title"]) for row in rows
+            if isinstance(row["steam_app_id"], str)
+            and re.fullmatch(r"[1-9][0-9]{0,19}", row["steam_app_id"])]
 
 
 @dataclass(frozen=True)
@@ -12,6 +29,25 @@ class SyncResult:
     attempted_at: str
     error: str | None = None
     notifications: int = 0
+
+
+@dataclass(frozen=True)
+class RealSyncReport:
+    total_tracked: int
+    games: tuple[PriceSyncGame, ...]
+    result: SyncResult | None
+    missing_games: tuple[PriceSyncGame, ...]
+
+
+def sync_real_prices(db):
+    """Same synchronous operation for the CLI and post-tracking web request."""
+    total = db.execute("SELECT COUNT(*) FROM games WHERE data_source='cheapshark' AND is_tracked=1").fetchone()[0]
+    games = tuple(load_sync_games(db))
+    if not games:
+        return RealSyncReport(total, games, None, ())
+    source = CheapSharkSource(games)
+    result = sync_prices(db, source)
+    return RealSyncReport(total, games, result, tuple(source.missing_games))
 
 
 def _utc_now():
@@ -40,6 +76,7 @@ def sync_prices(db, source, scenario="price-drop", now=None):
         db.commit()
         return SyncResult(False, 0, 0, attempted_at, str(exc))
 
+    completed_at = now or _utc_now()
     inserted = 0
     notification_count = 0
     # Acquire the write lock BEFORE reading the previous valid price. The context
@@ -91,7 +128,7 @@ def sync_prices(db, source, scenario="price-drop", now=None):
                 WHERE game_id = ? AND ? > target_cents AND ? <= target_cents
                 ON CONFLICT(user_id, game_id, source_event_id) DO NOTHING
                 """,
-                (event.event_id, event.price_cents, event.observed_at, attempted_at,
+                (event.event_id, event.price_cents, event.observed_at, completed_at,
                  event.game_id, previous["price_cents"], event.price_cents),
             )
             notification_count += cursor.rowcount
@@ -106,6 +143,6 @@ def sync_prices(db, source, scenario="price-drop", now=None):
                 last_success_at = excluded.last_success_at,
                 last_error = NULL
             """,
-            (source.name, attempted_at, attempted_at),
+            (source.name, attempted_at, completed_at),
         )
     return SyncResult(True, len(events), inserted, attempted_at, notifications=notification_count)

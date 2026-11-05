@@ -1,6 +1,7 @@
 import sqlite3
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
@@ -12,7 +13,7 @@ from adapters.cheapshark import CheapSharkSource, GameSearchResult
 from adapters.contracts import PriceObservationEvent, PriceSourceError
 from adapters.demo_price_source import DemoPriceSource
 from migrations import upgrade_game_identifiers
-from services.price_sync import sync_prices
+from services.price_sync import sync_prices, load_sync_games
 
 
 def lookup_payload(steam_id="9999", title="服务端验证的游戏", price="19.99"):
@@ -124,12 +125,25 @@ class TrackingPageTest(unittest.TestCase):
                 for name in ["games", "price_observations", "price_targets", "notifications", "sync_status"]}
 
     def post(self, game_id="555", payload=None, extra=None):
-        with patch("adapters.cheapshark.urlopen"), patch(
-            "adapters.cheapshark.json.load", return_value=payload if payload is not None else lookup_payload()
+        lookup = payload if payload is not None else lookup_payload()
+        calls = 0
+
+        def response_payload(_response):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return lookup
+            return [{"storeID": "1", "steamAppID": game.steam_app_id,
+                     "salePrice": "19.99" if game.steam_app_id == "9999" else "14.99", "lastChange": 100}
+                    for game in load_sync_games(get_db())]
+
+        with patch("adapters.cheapshark.urlopen") as opener, patch(
+            "adapters.cheapshark.json.load", side_effect=response_payload
         ):
+            opener.return_value.__enter__.return_value.headers = {}
             return self.client.post("/games/track", data={"cheapshark_game_id": game_id, **(extra or {})})
 
-    def test_first_add_uses_verified_metadata_and_no_history_or_fake_pair(self):
+    def test_first_add_uses_verified_metadata_auto_syncs_and_has_no_fake_pair(self):
         result = self.post(extra={"title": "伪造标题", "price": "0", "user_id": "999", "game_id": "1"})
         self.assertEqual(result.status_code, 303)
         row = get_db().execute("SELECT * FROM games WHERE cheapshark_game_id='555'").fetchone()
@@ -138,13 +152,13 @@ class TrackingPageTest(unittest.TestCase):
         self.assertEqual(row["subtitle"], "外部数据未提供")
         self.assertEqual(row["genre"], "外部数据未提供")
         self.assertIsNone(row["demo_game_id"])
-        self.assertEqual(get_db().execute("SELECT COUNT(*) FROM price_observations WHERE game_id=?", (row["id"],)).fetchone()[0], 0)
+        self.assertEqual(get_db().execute("SELECT COUNT(*) FROM price_observations WHERE game_id=?", (row["id"],)).fetchone()[0], 1)
         page = self.client.get(result.location)
         self.assertEqual(page.status_code, 200)
-        self.assertIn("暂无已记录报价".encode(), page.data)
+        self.assertIn(b"$19.99", page.data)
         self.assertIn(b"9999", page.data)
         self.assertNotIn(f'/games/{row["id"] - 100}"'.encode(), page.data)
-        self.assertIn("当前批量同步仍只处理原四款".encode(), page.data)
+        self.assertIn("执行手动同步即可采集".encode(), page.data)
 
     def test_duplicate_reposts_and_existing_legacy_game(self):
         first = self.post()
@@ -209,13 +223,77 @@ class TrackingPageTest(unittest.TestCase):
                 self.assertEqual(page.status_code, 200)
                 self.assertIn(f'href="/games/{other}"'.encode(), page.data)
 
+    def test_detail_cancel_button_only_appears_for_active_real_games(self):
+        real = self.client.get("/games/101")
+        self.assertIn(b'action="/games/untrack?return_to=detail"', real.data)
+        self.assertIn(b'class="cancel-tracking"', real.data)
+        self.assertIn(b'name="steam_app_id" value="413150"', real.data)
+        self.assertNotIn(b'class="cancel-tracking"', self.client.get("/games/1").data)
+
+    def test_cancel_from_detail_opens_first_tracked_game_and_preserves_data_without_network(self):
+        self.client.post("/games/101/target", data={"target_price": "100.00"})
+        source = SimpleNamespace(name="detail-test", fetch=lambda scenario: [
+            PriceObservationEvent("detail-high", 101, 12800, "2026-11-01 10:00:00"),
+            PriceObservationEvent("detail-drop", 101, 9000, "2026-11-02 10:00:00"),
+        ])
+        self.assertEqual(sync_prices(get_db(), source).notifications, 1)
+        before = self.snapshot()
+        with patch("adapters.cheapshark.urlopen", side_effect=AssertionError("No external request when cancelling")):
+            for _ in range(2):
+                result = self.client.post("/games/untrack?return_to=detail", data={"steam_app_id": "413150", "game_id": "102"})
+                self.assertEqual(result.status_code, 303)
+                self.assertTrue(result.location.endswith("/games?source=cheapshark"))
+            page = self.client.get(result.location, follow_redirects=True)
+        self.assertTrue(page.request.path.endswith("/games/102"))
+        self.assertIn("已取消追踪".encode(), page.data)
+        self.assertIn(b'class="cancel-tracking"', page.data)
+        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=101").fetchone()[0], 0)
+        self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=102").fetchone()[0], 1)
+        after = self.snapshot()
+        for table in before:
+            if table != "games":
+                self.assertEqual(before[table], after[table])
+        parser = NavigationParser(page.data)
+        self.assertNotIn("星露谷物语", [item["text"] for item in parser.bars["游戏列表"]])
+        # Arbitrary return URLs are ignored; only the fixed detail destination is supported.
+        result = self.client.post("/games/untrack?return_to=https://example.invalid", data={"steam_app_id": "413150"})
+        self.assertTrue(result.location.startswith("/games/search"))
+
+    def test_cancel_last_real_game_shows_empty_state_and_old_url_redirects(self):
+        get_db().execute("UPDATE games SET is_tracked=0 WHERE data_source='cheapshark' AND id<>101")
+        get_db().commit()
+        before = self.snapshot()
+        with patch("adapters.cheapshark.urlopen", side_effect=AssertionError("No external request")):
+            page = self.client.post("/games/untrack?return_to=detail", data={"steam_app_id": "413150"}, follow_redirects=True)
+            old_url = self.client.get("/games/101", follow_redirects=True)
+        for result in [page, old_url]:
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(result.request.path, "/games")
+            self.assertIn("暂无已追踪游戏".encode(), result.data)
+            self.assertNotIn(b'class="hero"', result.data)
+            self.assertNotIn(b'class="cancel-tracking"', result.data)
+        self.assertIn("已取消追踪".encode(), page.data)
+        after = self.snapshot()
+        for table in before:
+            if table != "games":
+                self.assertEqual(before[table], after[table])
+
+    def test_cancel_nonfirst_game_returns_first_in_list(self):
+        page = self.client.post("/games/untrack?return_to=detail", data={"steam_app_id": "1868140"}, follow_redirects=True)
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.request.path, "/games/101")
+        old_url = self.client.get("/games/104", follow_redirects=True)
+        self.assertEqual(old_url.request.path, "/games/101")
+
     def test_search_state_cancel_and_restore_preserve_all_business_records(self):
         first = self.post()
         game_id = get_db().execute("SELECT id FROM games WHERE cheapshark_game_id='555'").fetchone()[0]
         self.client.post(f"/games/{game_id}/target", data={"target_price": "100.00"})
+        previous = get_db().execute("SELECT MAX(observed_at) FROM price_observations WHERE game_id=?", (game_id,)).fetchone()[0]
+        next_time = datetime.fromisoformat(previous) + timedelta(seconds=1)
         source = SimpleNamespace(name="tracking-test", fetch=lambda scenario: [
-            PriceObservationEvent("track-high", game_id, 12800, "2026-11-01 10:00:00"),
-            PriceObservationEvent("track-drop", game_id, 9000, "2026-11-02 10:00:00"),
+            PriceObservationEvent("track-high", game_id, 12800, next_time.strftime("%Y-%m-%d %H:%M:%S.%f")),
+            PriceObservationEvent("track-drop", game_id, 9000, (next_time + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S.%f")),
         ])
         self.assertEqual(sync_prices(get_db(), source).notifications, 1)
         results = [GameSearchResult("555", "Game", "9999", 100)]
@@ -238,9 +316,9 @@ class TrackingPageTest(unittest.TestCase):
         self.assertIn('>加入追踪</button>'.encode(), page.data)
         self.assertNotIn(b'action="/games/untrack"', page.data)
         old_detail = self.client.get(first.location)
-        self.assertEqual(old_detail.status_code, 200)
-        self.assertIn("已取消追踪".encode(), old_detail.data)
-        self.assertIn(b"$90.00", old_detail.data)
+        self.assertEqual(old_detail.status_code, 302)
+        self.assertTrue(old_detail.location.endswith("/games?source=cheapshark"))
+        self.assertEqual(get_db().execute("SELECT price_cents FROM price_observations WHERE game_id=? ORDER BY observed_at DESC,id DESC LIMIT 1", (game_id,)).fetchone()[0], 9000)
         restored = self.post()
         self.assertEqual(restored.location, first.location)
         self.assertEqual(get_db().execute("SELECT is_tracked FROM games WHERE id=?", (game_id,)).fetchone()[0], 1)

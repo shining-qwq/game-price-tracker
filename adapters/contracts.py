@@ -12,3 +12,11 @@ class PriceObservationEvent:
     price_cents: int
     observed_at: str
     source_updated_at: int | None = None
+
+
+@dataclass(frozen=True)
+class PriceSyncGame:
+    """Database-selected identity passed into a source, with no DB connection."""
+    game_id: int
+    steam_app_id: str
+    title: str

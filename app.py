@@ -8,9 +8,9 @@ import click
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
 
 from adapters.demo_price_source import DemoPriceSource, validate_scenario
-from adapters.cheapshark import CheapSharkSource, MAX_SEARCH_LENGTH, STEAM_GAMES, validate_external_id
+from adapters.cheapshark import CheapSharkSource, MAX_SEARCH_LENGTH, validate_external_id
 from adapters.contracts import PriceSourceError
-from services.price_sync import sync_prices
+from services.price_sync import sync_prices, sync_real_prices
 from services.game_tracking import track_verified_game, stop_tracking
 from migrations import upgrade_game_identifiers
 
@@ -133,13 +133,6 @@ def sync_prices_command(source, event_id, scenario):
     if source == "cheapshark":
         if scenario is not None or event_id is not None:
             raise click.UsageError("真实同步不能指定模拟场景或事件 ID。")
-        active_ids = {row[0] for row in get_db().execute(
-            "SELECT id FROM games WHERE data_source='cheapshark' AND is_tracked=1"
-        )}
-        adapter = CheapSharkSource({app_id: game_id for app_id, game_id in STEAM_GAMES.items() if game_id in active_ids})
-        if not adapter.steam_games:
-            click.echo("原四款真实游戏均未开启追踪，本次不请求外部报价。")
-            return
     else:
         scenario = scenario or "price-drop"
         try:
@@ -158,20 +151,40 @@ def sync_prices_command(source, event_id, scenario):
             timestamp = max(timestamp, datetime.fromisoformat(latest) + timedelta(microseconds=1))
         adapter = DemoPriceSource(event_id, timestamp.strftime("%Y-%m-%d %H:%M:%S.%f"))
     try:
-        result = sync_prices(get_db(), adapter, scenario=scenario)
+        if source == "cheapshark":
+            report = sync_real_prices(get_db())
+            total_tracked, sync_games = report.total_tracked, report.games
+            if report.result is None:
+                click.echo(f"总追踪数 {total_tracked}，可同步数 0，收到报价数 0，新增历史数 0，缺失数 0，通知数 0。本次不请求外部报价。")
+                return
+            result = report.result
+        else:
+            result = sync_prices(get_db(), adapter, scenario=scenario)
     except (sqlite3.DatabaseError, PriceSourceError, ValueError) as exc:
         raise click.ClickException(f"同步未完成：{exc}") from None
     if not result.success:
+        if source == "cheapshark":
+            click.echo(f"总追踪数 {total_tracked}，可同步数 {len(sync_games)}。整轮失败：新增历史数 0，通知数 0；收到报价数与缺失数未统计。")
         raise click.ClickException(
             f"同步失败：{result.error}。旧价格与上次成功时间已保留。"
         )
 
-    click.echo(
-        f"同步成功：收到 {result.received} 条，新增 {result.inserted} 条，"
-        f"忽略重复或旧事件 {result.received - result.inserted} 条，生成通知 {result.notifications} 条。"
-    )
-    if source == "cheapshark" and adapter.missing_games:
-        click.echo("缺失报价（没有当成免费，保留旧价格）：Steam AppID " + ", ".join(adapter.missing_games))
+    if source == "cheapshark":
+        click.echo(
+            f"同步成功：总追踪数 {total_tracked}，可同步数 {len(sync_games)}，"
+            f"收到报价数 {result.received}，新增历史数 {result.inserted}，"
+            f"缺失数 {len(report.missing_games)}，通知数 {result.notifications}；"
+            f"重复或旧事件等未新增 {result.received - result.inserted} 条。"
+        )
+        if total_tracked != len(sync_games):
+            click.echo(f"跳过非 Steam/USD 或无有效 Steam AppID 的档案 {total_tracked - len(sync_games)} 款。")
+        for game in report.missing_games:
+            click.echo(f"缺失报价：{game.title}（Steam AppID {game.steam_app_id}），保留旧价格，未当成免费。")
+    else:
+        click.echo(
+            f"同步成功：收到 {result.received} 条，新增 {result.inserted} 条，"
+            f"忽略重复或旧事件 {result.received - result.inserted} 条，生成通知 {result.notifications} 条。"
+        )
 
 
 @app.template_filter("money")
@@ -228,7 +241,10 @@ def game_category():
     ).fetchone()
     if first:
         return redirect(url_for("game_detail", game_id=first["id"]))
-    return render_template("game_category.html", **navigation_context(source))
+    return render_template(
+        "game_category.html", **navigation_context(source),
+        source_label="CheapShark · Steam · USD" if source == "cheapshark" else "模拟数据 · USD",
+    )
 
 
 @app.get("/games/search")
@@ -280,20 +296,36 @@ def track_game():
     except sqlite3.DatabaseError:
         flash("未能保存追踪档案，未加入半成品记录。请确认已运行 upgrade-db 后重试。", "error")
         return redirect(url_for("game_search"), code=303)
-    flash("已加入追踪；本轮尚未采集此游戏价格。" if created else "已开启追踪，已打开已有档案。", "success")
+    flash("已加入追踪。" if created else "已开启追踪，沿用已有档案。", "success")
+    try:
+        report = sync_real_prices(get_db())
+        if report.result is None:
+            flash("没有可同步的 Steam 游戏，尚未获取报价。", "error")
+        elif not report.result.success:
+            flash(f"追踪已保存，但自动同步失败：{report.result.error} 旧价格和上次成功同步时间已保留，请稍后手动重试。", "error")
+        elif any(item.game_id == game_id for item in report.missing_games):
+            flash("已自动同步，但该游戏本次没有 Steam 报价；保留旧价格，缺失不代表免费。", "error")
+        else:
+            flash(f"已自动同步追踪列表：收到 {report.result.received} 条 Steam 报价，新增 {report.result.inserted} 条历史。", "success")
+    except (sqlite3.DatabaseError, PriceSourceError, ValueError):
+        flash("追踪已保存，但自动同步未完成。旧价格和成功时间未被本次写入覆盖，请稍后手动重试。", "error")
     return redirect(url_for("game_detail", game_id=game_id), code=303)
 
 
 @app.post("/games/untrack")
 def untrack_game():
+    game_id = None
     try:
         steam_id = validate_external_id(request.form.get("steam_app_id", ""))
-        stop_tracking(get_db(), steam_id)
+        game_id = stop_tracking(get_db(), steam_id)
         flash("已取消追踪；历史价格、目标价和旧通知均已保留。", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     except sqlite3.DatabaseError:
         flash("取消追踪未完成，请确认已运行 upgrade-db 后重试。", "error")
+    # Use the category's existing ordering/empty state, never a user-supplied URL.
+    if request.args.get("return_to") == "detail" and game_id is not None:
+        return redirect(url_for("game_category", source="cheapshark"), code=303)
     query = session.get("last_game_search", "")
     return redirect(url_for("game_search", q=query) if query else url_for("game_search"), code=303)
 
@@ -327,6 +359,8 @@ def game_detail(game_id):
     ).fetchone()
     if game is None:
         abort(404)
+    if game["data_source"] == "cheapshark" and not game["is_tracked"]:
+        return redirect(url_for("game_category", source="cheapshark"))
 
     history = db.execute(
         """

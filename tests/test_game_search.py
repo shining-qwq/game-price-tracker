@@ -13,9 +13,12 @@ from app import app
 class CheapSharkGameSearchAdapterTest(unittest.TestCase):
     def search_rows(self, query, rows):
         with patch("adapters.cheapshark.urlopen") as opener:
-            with patch("adapters.cheapshark.json.load", return_value=rows):
+            opener.return_value.__enter__.return_value.headers = {}
+            steam_rows = [{"storeID": "1", "steamAppID": row["steamAppID"], "salePrice": "14.99", "lastChange": 100}
+                          for row in rows if row.get("steamAppID")]
+            with patch("adapters.cheapshark.json.load", side_effect=[rows, steam_rows]):
                 results = CheapSharkSource().search_by_title(query)
-            request = opener.call_args.args[0]
+            request = opener.call_args_list[0].args[0]
             self.assertEqual(opener.call_args.kwargs["timeout"], 10)
         return results, request
 
@@ -27,7 +30,7 @@ class CheapSharkGameSearchAdapterTest(unittest.TestCase):
             "cheapest": "12.34",
         }]
         results, request = self.search_rows("  中文 & 100%  ", rows)
-        self.assertEqual(results, [GameSearchResult("123", "中文 & 100% Game", "456", 1234)])
+        self.assertEqual(results, [GameSearchResult("123", "中文 & 100% Game", "456", 1234, 1499)])
         self.assertEqual(parse_qs(urlparse(request.full_url).query)["title"], ["中文 & 100%"])
         self.assertIn("GamePriceTracker-Learning", request.headers["User-agent"])
 

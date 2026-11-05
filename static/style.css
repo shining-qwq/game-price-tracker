@@ -300,9 +300,15 @@ h2 { margin: 0; font-size: 24px; line-height: 1.25; letter-spacing: -.025em; }
 .result-card dt { color: var(--muted); font-size: 12px; font-weight: 700; }
 .result-card dd { margin: 3px 0 0; overflow-wrap: anywhere; }
 .result-card .helper { margin-bottom: 0; }
+.steam-search-price strong { font-size: 28px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.result-card .reference-price { color: var(--muted); font-size: 13px; }
 .category-switcher { margin-top: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .tracking-active { color: var(--mint-ink); background: var(--mint); border: 1px solid #a9d9be; }
 .tracking-active:hover { color: var(--danger); background: #fff0f0; }
+.detail-track-form { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+.detail-track-form span { color: rgba(255,255,255,.82); font-size: 13px; }
+.cancel-tracking { color: var(--danger); background: white; border: 1px solid rgba(255,255,255,.65); }
+.cancel-tracking:hover { color: var(--danger); background: #fff0f0; }
 .missing-value { color: var(--danger); font-size: 13px; font-weight: 650; }
 
 .saved-target,

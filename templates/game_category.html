@@ -1,6 +1,9 @@
 {% extends 'base.html' %}
 {% block title %}游戏列表 · 价格观察站{% endblock %}
 {% block content %}
+{% for category, message in get_flashed_messages(with_categories=true) %}
+<p class="flash {{ category }}" role="status">{{ message }}</p>
+{% endfor %}
 <section class="panel">
   <h1 class="page-title">暂无已追踪游戏</h1>
   <p class="helper">取消追踪不会删除旧档案。可以搜索游戏后重新加入。</p>

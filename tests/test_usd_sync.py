@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import app, get_db
 from adapters.cheapshark import CheapSharkSource
-from services.price_sync import sync_prices
+from services.price_sync import sync_prices, load_sync_games
 
 
 class UsdSyncTest(unittest.TestCase):
@@ -52,7 +52,7 @@ class UsdSyncTest(unittest.TestCase):
         with patch("adapters.cheapshark.urlopen") as opener:
             opener.return_value.__enter__.return_value.headers = {}
             with patch("adapters.cheapshark.json.load", return_value=rows):
-                result = sync_prices(get_db(), CheapSharkSource())
+                result = sync_prices(get_db(), CheapSharkSource(load_sync_games(get_db())))
             self.assertEqual(opener.call_args.kwargs["timeout"], 10)
         return result
 
@@ -81,7 +81,7 @@ class UsdSyncTest(unittest.TestCase):
         self.sync_rows([{"storeID": "1", "steamAppID": "413150", "salePrice": "14.99", "lastChange": 100}])
         before = tuple(get_db().execute("SELECT last_success_at FROM sync_status WHERE source_name='cheapshark-steam-usd'").fetchone())
         with patch("adapters.cheapshark.urlopen", side_effect=TimeoutError):
-            result = sync_prices(get_db(), CheapSharkSource())
+            result = sync_prices(get_db(), CheapSharkSource(load_sync_games(get_db())))
         self.assertFalse(result.success)
         self.assertEqual(tuple(get_db().execute("SELECT last_success_at FROM sync_status WHERE source_name='cheapshark-steam-usd'").fetchone()), before)
         self.assertFalse(self.sync_rows([{"storeID": "2", "steamAppID": "413150"}]).success)

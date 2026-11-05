@@ -3,16 +3,19 @@
 {% block title %}{{ game.title }} · 价格观察站{% endblock %}
 
 {% block content %}
-{% if is_real and not game.is_tracked %}
-<p class="search-message">此游戏已取消追踪，以下是保留的旧档案，暂停采集和通知。可在搜索页重新加入。</p>
-{% endif %}
-
 <section class="hero" style="--game-accent: {{ game.accent }}">
   <div class="hero-copy">
     <p class="eyebrow">{{ game.platform }} · {{ game.region }} · {{ game.currency }}</p>
     <h1>{{ game.title }}</h1>
     <p class="subtitle">{{ game.subtitle }}</p>
     <span class="genre">{{ game.genre }}</span>
+    {% if is_real and game.is_tracked and game.steam_app_id %}
+    <form method="post" action="{{ url_for('untrack_game', return_to='detail') }}" class="detail-track-form">
+      <input type="hidden" name="steam_app_id" value="{{ game.steam_app_id }}">
+      <button type="submit" class="cancel-tracking" aria-label="取消追踪 {{ game.title }}">取消追踪</button>
+      <span>保留历史价格、目标价和旧通知</span>
+    </form>
+    {% endif %}
   </div>
 
   <div class="price-ticket" aria-label="当前价格">
@@ -31,7 +34,7 @@
 </section>
 {% if is_real %}
 <p class="helper">来源：<a href="https://www.cheapshark.com/">CheapShark</a> 的 Steam 美元报价。地区未由源提供，价格可能延迟；不做地区推断或汇率换算。真实历史从首次成功采集起记录，与模拟订阅、通知和历史分开。</p>
-<p class="helper">Steam AppID：{{ game.steam_app_id or '尚未验证' }} · CheapShark gameID：{{ game.cheapshark_game_id or '待加入验证时补齐' }}。{% if not counterpart_id %}此游戏没有对应的模拟档案。当前批量同步仍只处理原四款，新加入游戏暂不参与采集。{% endif %}</p>
+<p class="helper">Steam AppID：{{ game.steam_app_id or '尚未验证' }} · CheapShark gameID：{{ game.cheapshark_game_id or '待加入验证时补齐' }}。{% if not counterpart_id %}此游戏没有对应的模拟档案。{% endif %}开启追踪且 Steam AppID 有效时，执行手动同步即可采集。上次成功同步时间为此来源整体请求成功的时间；缺失报价时保留旧采集价和采集时间。零价仅代表本次报价为零，不代表永久免费。</p>
 {% endif %}
 
 {% with messages = get_flashed_messages(with_categories=true) %}

@@ -1,5 +1,5 @@
 """CheapShark search plus Steam-only USD quotes. No API key is required."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -9,11 +9,12 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 
-from adapters.contracts import PriceObservationEvent, PriceSourceError
+from adapters.contracts import PriceObservationEvent, PriceSourceError, PriceSyncGame
 
 
-STEAM_GAMES = {"413150": 101, "367520": 102, "1426210": 103, "1868140": 104}
 TIMEOUT_SECONDS = 10
+SYNC_BATCH_SIZE = 60
+DEALS_PAGE_SIZE = 60
 SEARCH_LIMIT = 20
 MAX_SEARCH_LENGTH = 80
 API_BASE_URL = "https://www.cheapshark.com/api/1.0"
@@ -28,6 +29,16 @@ class GameSearchResult:
     title: str
     steam_app_id: str | None
     cheapest_cents: int | None
+    steam_price_cents: int | None = None
+    steam_price_error: str | None = None
+
+
+@dataclass(frozen=True)
+class SteamQuote:
+    steam_app_id: str
+    price_cents: int
+    source_updated_at: int
+    observed_at: str
 
 
 @dataclass(frozen=True)
@@ -50,7 +61,12 @@ def parse_price(value):
         return None
     try:
         amount = Decimal(str(value))
-        if not amount.is_finite() or amount < 0 or amount * 100 != (amount * 100).to_integral_value():
+        if not amount.is_finite() or amount < 0 or amount > Decimal("92233720368547758.07"):
+            raise InvalidOperation
+        # Check fractional digits before arithmetic: a tiny exponent must not
+        # underflow to zero and accidentally become a "free" price.
+        _, digits, exponent = amount.as_tuple()
+        if exponent < -2 and any(digits[exponent + 2:]):
             raise InvalidOperation
         cents = int(amount * 100)
         if cents > 9223372036854775807:
@@ -63,9 +79,9 @@ def parse_price(value):
 class CheapSharkSource:
     name = "cheapshark-steam-usd"
 
-    def __init__(self, steam_games=None):
+    def __init__(self, games=()):
         self.missing_games = []
-        self.steam_games = dict(STEAM_GAMES if steam_games is None else steam_games)
+        self.games = tuple(games)
 
     def search_by_title(self, title):
         """Search CheapShark's game catalog without changing local state."""
@@ -95,7 +111,7 @@ class CheapSharkSource:
         except (ValueError, TypeError):
             raise PriceSourceError("CheapShark 搜索响应格式错误。") from None
 
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or len(rows) > SEARCH_LIMIT:
             raise PriceSourceError("CheapShark 搜索响应不是游戏列表。")
 
         results = []
@@ -121,7 +137,15 @@ class CheapSharkSource:
                     cheapest_cents=parse_price(row.get("cheapest")),
                 )
             )
-        return results
+        app_ids = list(dict.fromkeys(item.steam_app_id for item in results if item.steam_app_id))
+        if not app_ids:
+            return results
+        try:
+            quotes = {quote.steam_app_id: quote.price_cents for quote in self.get_steam_quotes(app_ids)}
+        except PriceSourceError as exc:
+            # Directory search remains useful even if the Steam quote request fails.
+            return [replace(item, steam_price_error=str(exc)) if item.steam_app_id else item for item in results]
+        return [replace(item, steam_price_cents=quotes.get(item.steam_app_id)) for item in results]
 
     def get_verified_steam_game(self, game_id):
         """Recheck a specific catalog game and its Steam offer on the server."""
@@ -170,36 +194,38 @@ class CheapSharkSource:
             raise PriceSourceError("Steam 报价缺失，不能加入追踪；缺失不代表免费。")
         return VerifiedSteamGame(game_id, steam_id, title.strip(), cents)
 
-    def fetch(self, scenario=None):
-        self.missing_games = []
-        if not self.steam_games:
-            return []
-        params = urlencode({"storeID": "1", "steamAppID": ",".join(self.steam_games), "pageSize": "60"})
+    def _fetch_quote_batch(self, app_ids):
+        expected_ids = set(app_ids)
+        params = urlencode({"storeID": "1", "steamAppID": ",".join(app_ids), "pageSize": str(DEALS_PAGE_SIZE)})
         request = Request(
             f"{API_BASE_URL}/deals?{params}",
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         try:
             with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-                if int(response.headers.get("X-Total-Page-Count", "1")) > 1:
-                    raise PriceSourceError("报价响应超出一页，本次不进行不完整同步。")
+                page_count = int(response.headers.get("X-Total-Page-Count", "1"))
+                if page_count < 0 or page_count > 1:
+                    raise PriceSourceError("报价分页超出本批预期，整轮不进行不完整同步。")
                 rows = json.load(response)
         except HTTPError as exc:
             if exc.code == 429:
-                raise PriceSourceError(f"CheapShark 限流，请等待 Retry-After={exc.headers.get('Retry-After', '未提供')} 后手动重试。") from None
+                retry_after = exc.headers.get('Retry-After', '未提供') if exc.headers else '未提供'
+                raise PriceSourceError(f"CheapShark 限流，请等待 Retry-After={retry_after} 后手动重试。") from None
             raise PriceSourceError(f"CheapShark HTTP {exc.code}，请稍后手动重试。") from None
         except (URLError, OSError, TimeoutError):
             raise PriceSourceError("CheapShark 网络、代理或超时错误。") from None
         except (ValueError, TypeError):
             raise PriceSourceError("CheapShark 响应格式错误。") from None
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or len(rows) > DEALS_PAGE_SIZE:
             raise PriceSourceError("CheapShark 响应不是报价列表。")
 
         observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-        events = []
+        quotes = []
         seen = set()
         for row in rows:
-            if not isinstance(row, dict) or row.get("storeID") != "1" or row.get("steamAppID") not in self.steam_games:
+            if (not isinstance(row, dict) or row.get("storeID") != "1"
+                    or not isinstance(row.get("steamAppID"), str)
+                    or row["steamAppID"] not in expected_ids):
                 raise PriceSourceError("CheapShark 返回了不匹配的游戏或商店。")
             app_id = row["steamAppID"]
             if app_id in seen:
@@ -209,13 +235,51 @@ class CheapSharkSource:
             if price is None:
                 continue
             changed = row.get("lastChange")
-            if type(changed) is not int or changed < 0:
+            if type(changed) is not int or not 0 <= changed <= 9223372036854775807:
                 raise PriceSourceError("CheapShark 缺少有效的源更新时间。")
-            # No provider observation ID is supplied. Derive a stable snapshot key;
-            # do not pretend the deal ID itself identifies a price change.
-            key = f"steam:USD:{app_id}:{changed}:{price}"
+            quotes.append(SteamQuote(app_id, price, changed, observed_at))
+        return quotes
+
+    def get_steam_quotes(self, app_ids):
+        """Shared Steam-only, batched validation for search display and sync."""
+        app_ids = tuple(app_ids)
+        for app_id in app_ids:
+            try:
+                validate_external_id(app_id)
+            except ValueError:
+                raise PriceSourceError("报价目标的 Steam AppID 无效。") from None
+        app_ids = tuple(dict.fromkeys(app_ids))
+        quotes = []
+        for start in range(0, len(app_ids), SYNC_BATCH_SIZE):
+            try:
+                quotes.extend(self._fetch_quote_batch(app_ids[start:start + SYNC_BATCH_SIZE]))
+            except PriceSourceError as exc:
+                raise PriceSourceError(f"第 {start // SYNC_BATCH_SIZE + 1} 批同步失败：{exc}") from None
+        return quotes
+
+    def fetch(self, scenario=None):
+        """Materialize ALL validated batches before the caller begins its write transaction."""
+        self.missing_games = []
+        seen_ids, seen_apps = set(), set()
+        for game in self.games:
+            if not isinstance(game, PriceSyncGame) or type(game.game_id) is not int or game.game_id <= 0:
+                raise PriceSourceError("同步目标的内部游戏标识无效。")
+            try:
+                validate_external_id(game.steam_app_id)
+            except ValueError:
+                raise PriceSourceError("同步目标的 Steam AppID 无效。") from None
+            if game.game_id in seen_ids or game.steam_app_id in seen_apps:
+                raise PriceSourceError("同步目标包含重复的游戏或 Steam AppID。")
+            seen_ids.add(game.game_id)
+            seen_apps.add(game.steam_app_id)
+        by_app_id = {game.steam_app_id: game for game in self.games}
+        events = []
+        for quote in self.get_steam_quotes(tuple(by_app_id)):
+            # Same stable snapshot format as before, independent of display/search.
+            key = f"steam:USD:{quote.steam_app_id}:{quote.source_updated_at}:{quote.price_cents}"
             event_id = "cheapshark-" + hashlib.sha256(key.encode()).hexdigest()
-            events.append(PriceObservationEvent(event_id, self.steam_games[app_id], price, observed_at, changed))
+            events.append(PriceObservationEvent(event_id, by_app_id[quote.steam_app_id].game_id,
+                                                quote.price_cents, quote.observed_at, quote.source_updated_at))
         priced = {event.game_id for event in events}
-        self.missing_games = [app_id for app_id, game_id in self.steam_games.items() if game_id not in priced]
+        self.missing_games = [game for game in self.games if game.game_id not in priced]
         return events

@@ -6,7 +6,7 @@
 <section class="panel search-panel">
   <p class="kicker">CheapShark 游戏目录</p>
   <h1 class="page-title">搜索游戏</h1>
-  <p class="helper">搜索只展示候选结果。“加入追踪”会重新验证游戏与 Steam 报价，成功后创建真实游戏档案；本轮不采集新游戏的历史价格。</p>
+  <p class="helper">优先显示 Steam/USD 报价，跨商店最低价仅作参考。加入追踪后会自动同步当前追踪列表，再进入详情页；报价由 CheapShark 提供，可能有延迟。</p>
   {% for category, message in get_flashed_messages(with_categories=true) %}
     <p class="search-message {{ category }}" role="status">{{ message }}</p>
   {% endfor %}
@@ -42,6 +42,27 @@
       <article class="result-card">
         <h3>{{ item.title }}</h3>
         <dl>
+          <div class="steam-search-price">
+            <dt>Steam 当前报价（USD，来源 CheapShark）</dt>
+            <dd>
+              {% if item.steam_price_cents is not none %}
+              <strong>{{ item.steam_price_cents|money }}</strong>
+              {% elif not item.steam_app_id %}
+              <span class="missing-value">未提供 Steam AppID，无法查询 Steam 价</span>
+              {% elif item.steam_price_error %}
+              <span class="missing-value">Steam 报价暂不可用</span>
+              {% else %}
+              <span class="missing-value">暂无 Steam 报价，缺失不代表免费</span>
+              {% endif %}
+              {% if item.steam_price_error %}<p class="helper">{{ item.steam_price_error }}</p>{% endif %}
+            </dd>
+          </div>
+          {% if item.cheapest_cents is not none %}
+          <div class="reference-price">
+            <dt>次要参考：CheapShark 当前跨商店最低报价（USD）</dt>
+            <dd>{{ item.cheapest_cents|money }} · 不用于 Steam 追踪或提醒</dd>
+          </div>
+          {% endif %}
           <div>
             <dt>稳定标识</dt>
             <dd>CheapShark gameID <code>{{ item.game_id }}</code></dd>
@@ -56,12 +77,6 @@
               {% endif %}
             </dd>
           </div>
-          {% if item.cheapest_cents is not none %}
-          <div>
-            <dt>CheapShark 当前跨商店最低报价（USD）</dt>
-            <dd><strong>{{ item.cheapest_cents|money }}</strong></dd>
-          </div>
-          {% endif %}
         </dl>
         {% set tracked_game = tracked_by_cheapshark.get(item.game_id) or tracked_by_steam.get(item.steam_app_id) %}
         {% if tracked_game %}
