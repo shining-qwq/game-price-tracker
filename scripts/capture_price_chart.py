@@ -61,6 +61,7 @@ def main():
                 html = response.get_data(as_text=True).replace(
                     '<link rel="stylesheet" href="/static/style.css">',
                     f"<style>{css}\n{crop_css}</style>")
+                html = html.replace('href="/static/favicon.svg"', f'href="{(ROOT / "static/favicon.svg").as_uri()}"')
                 html = html.replace("<body>", '<body><p style="position:absolute;top:4px;right:32px;margin:0;font-size:12px">离线演示截图 · 非实时报价</p>', 1)
                 page = work / f"{name}.html"
                 page.write_text(html, encoding="utf-8")

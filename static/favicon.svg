@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>价格观察站</title>
+  <rect width="32" height="32" rx="8" fill="#3e56d8"/>
+  <path d="M7 22V10M7 22h19M10 18l5-5 5 3 5-8" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

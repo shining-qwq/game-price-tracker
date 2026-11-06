@@ -253,6 +253,12 @@ def index():
     return redirect(url_for("game_detail", game_id=1))
 
 
+@app.get("/favicon.ico")
+def favicon():
+    """Serve the same local SVG for browsers using the default icon path."""
+    return app.send_static_file("favicon.svg")
+
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
     error = None
@@ -484,8 +490,10 @@ def game_detail(game_id):
         LEFT JOIN price_observations latest ON latest.id = (
             SELECT po2.id
             FROM price_observations po2
+            JOIN games observed_game ON observed_game.id = po2.game_id
             WHERE po2.game_id = g.id
-            ORDER BY po2.observed_at DESC, po2.id DESC
+            ORDER BY CASE WHEN observed_game.data_source = 'cheapshark' THEN po2.source_updated_at END DESC,
+                     po2.observed_at DESC, po2.id DESC
             LIMIT 1
         )
         LEFT JOIN price_targets pt

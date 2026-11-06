@@ -1,0 +1,171 @@
+{
+  "pages": [
+    {
+      "mode": "desktop",
+      "path": "/games/1",
+      "final_path": "/games/1",
+      "status": 200,
+      "viewport": 1440,
+      "content": 1440
+    },
+    {
+      "mode": "desktop",
+      "path": "/games?source=demo",
+      "final_path": "/games",
+      "status": 200,
+      "viewport": 1440,
+      "content": 1440
+    },
+    {
+      "mode": "desktop",
+      "path": "/games/search",
+      "final_path": "/games/search",
+      "status": 200,
+      "viewport": 1440,
+      "content": 1440
+    },
+    {
+      "mode": "desktop",
+      "path": "/notifications",
+      "final_path": "/login",
+      "status": 200,
+      "viewport": 1440,
+      "content": 1440
+    },
+    {
+      "mode": "desktop",
+      "path": "/admin/sync",
+      "final_path": "/login",
+      "status": 200,
+      "viewport": 1440,
+      "content": 1440
+    },
+    {
+      "mode": "desktop",
+      "path": "/register",
+      "final_path": "/register",
+      "status": 200,
+      "viewport": 1440,
+      "content": 1440
+    },
+    {
+      "mode": "mobile",
+      "path": "/games/1",
+      "final_path": "/games/1",
+      "status": 200,
+      "viewport": 390,
+      "content": 390
+    },
+    {
+      "mode": "mobile",
+      "path": "/games?source=demo",
+      "final_path": "/games",
+      "status": 200,
+      "viewport": 390,
+      "content": 390
+    },
+    {
+      "mode": "mobile",
+      "path": "/games/search",
+      "final_path": "/games/search",
+      "status": 200,
+      "viewport": 390,
+      "content": 390
+    },
+    {
+      "mode": "mobile",
+      "path": "/notifications",
+      "final_path": "/login",
+      "status": 200,
+      "viewport": 390,
+      "content": 390
+    },
+    {
+      "mode": "mobile",
+      "path": "/admin/sync",
+      "final_path": "/login",
+      "status": 200,
+      "viewport": 390,
+      "content": 390
+    },
+    {
+      "mode": "mobile",
+      "path": "/register",
+      "final_path": "/register",
+      "status": 200,
+      "viewport": 390,
+      "content": 390
+    }
+  ],
+  "console": [],
+  "page_errors": [],
+  "failed_requests": [],
+  "http_errors": [],
+  "external_requests": [],
+  "favicon_requests": [
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/favicon.ico",
+      "status": 200,
+      "kind": "explicit-fallback-probe"
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/static/favicon.svg",
+      "status": 200
+    },
+    {
+      "path": "/favicon.ico",
+      "status": 200,
+      "kind": "explicit-fallback-probe"
+    }
+  ],
+  "checked_at_utc": "2026-11-06T05:08:26.259893+00:00",
+  "python_version": "3.14.3",
+  "browser_version": "156.0.4314.58",
+  "fallback_favicon_status": 200,
+  "database_unchanged": true,
+  "success": true
+}

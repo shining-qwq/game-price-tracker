@@ -1,8 +1,9 @@
-from tests.helpers import business_client
+from tests.helpers import business_client, TEST_HASH
 import io
 import json
 import sqlite3
 import unittest
+from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
@@ -160,7 +161,11 @@ class DynamicSyncTest(unittest.TestCase):
                 self.assertFalse(result.success)
                 self.assertEqual(self.snapshot(), before)
 
-    def test_dynamic_game_baseline_notifications_and_old_snapshot(self):
+    @patch("adapters.cheapshark.datetime")
+    def test_dynamic_game_baseline_notifications_and_old_snapshot(self, source_clock):
+        # Freeze the adapter's collection clock, not just sync-status timestamps:
+        # distinct CheapShark lastChange values can share this exact timestamp.
+        source_clock.now.return_value = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
         client = business_client()
         client.post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
         games = load_sync_games(get_db())
@@ -170,16 +175,122 @@ class DynamicSyncTest(unittest.TestCase):
                           changed if game.game_id == self.dynamic_id else 100) for game in games]
             result, _, _ = self.run_sync([rows], now="2026-11-05 12:00:00 UTC")
             self.assertTrue(result.success)
+            latest = get_db().execute("""SELECT price_cents, source_updated_at FROM price_observations
+                WHERE game_id=? ORDER BY observed_at DESC,id DESC LIMIT 1""", (self.dynamic_id,)).fetchone()
+            self.assertEqual((f"{latest['price_cents'] // 100}.{latest['price_cents'] % 100:02d}", latest["source_updated_at"]),
+                             (price, changed))
             self.assertEqual(get_db().execute("SELECT COUNT(*) FROM notifications WHERE game_id=?", (self.dynamic_id,)).fetchone()[0], expected_notices)
         before = self.snapshot()
         self.assertEqual(self.run_sync([rows], now="2026-11-05 12:00:00 UTC")[0].inserted, 0)
         old_rows = [quote(game, price="0.00", changed=99) for game in games]
         self.assertEqual(self.run_sync([old_rows], now="2026-11-05 12:00:00 UTC")[0].inserted, 0)
         self.assertEqual(self.snapshot(), before)
+        self.assertEqual(get_db().execute("SELECT COUNT(DISTINCT observed_at) FROM price_observations WHERE game_id=?",
+                                          (self.dynamic_id,)).fetchone()[0], 1)
         page = client.get(f"/games/{self.dynamic_id}")
         for text in ["$90.00", "$88.00", "2026-11-05 12:00:00 UTC", "5 次观测", "已收到 2 条降价通知"]:
             self.assertIn(text.encode(), page.data)
         self.assertEqual(get_db().execute("SELECT COUNT(*) FROM price_observations WHERE game_id<100").fetchone()[0], 20)
+
+    @patch("adapters.cheapshark.datetime")
+    def test_equal_source_revision_with_changed_price_is_not_a_new_valid_quote(self, source_clock):
+        game = next(game for game in load_sync_games(get_db()) if game.game_id == self.dynamic_id)
+        business_client().post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
+        source_clock.now.return_value = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+        self.assertEqual(self.run_sync([[quote(game, "128.00", 100)]])[0].inserted, 1)
+        before = self.snapshot()
+        # A later local fetch cannot make the same upstream revision newer.
+        source_clock.now.return_value = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+        for price in ["0.00", "88.00", "128.00"]:
+            result, _, _ = self.run_sync([[quote(game, price, 100)]])
+            self.assertEqual((result.inserted, result.notifications), (0, 0))
+            self.assertEqual(self.snapshot(), before)
+        result, _, _ = self.run_sync([[quote(game, "100.00", 101)]])
+        self.assertEqual((result.inserted, result.notifications), (1, 1))
+
+    @patch("adapters.cheapshark.datetime")
+    def test_first_real_quote_below_target_only_establishes_baseline(self, source_clock):
+        game = next(game for game in load_sync_games(get_db()) if game.game_id == self.dynamic_id)
+        business_client().post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
+        source_clock.now.return_value = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+        for changed, price, count in [(100, "88.00", 0), (101, "90.00", 0), (102, "120.00", 0), (103, "100.00", 1)]:
+            result, _, _ = self.run_sync([[quote(game, price, changed)]])
+            self.assertEqual(result.notifications, count)
+        self.assertEqual(get_db().execute("SELECT COUNT(*) FROM notifications WHERE game_id=?", (self.dynamic_id,)).fetchone()[0], 1)
+
+    @patch("adapters.cheapshark.datetime")
+    def test_same_collection_time_keeps_user_targets_and_cancellation_independent(self, source_clock):
+        game = next(game for game in load_sync_games(get_db()) if game.game_id == self.dynamic_id)
+        business_client().post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
+        with get_db() as db:
+            other_id = db.execute("""INSERT INTO users(display_name,username,username_normalized,password_hash)
+                VALUES ('SecondWatcher','SecondWatcher','secondwatcher',?)""", (TEST_HASH,)).lastrowid
+            db.execute("INSERT INTO user_game_tracking(user_id,game_id) VALUES (?,?)", (other_id, self.dynamic_id))
+            db.execute("INSERT INTO price_targets(user_id,game_id,target_cents) VALUES (?,?,9000)", (other_id, self.dynamic_id))
+        source_clock.now.return_value = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+        for changed, price, expected in [(100, "128.00", (0, 0)), (101, "100.00", (1, 0)),
+                                         (102, "88.00", (1, 1)), (103, "120.00", (1, 1)), (104, "90.00", (2, 2))]:
+            self.run_sync([[quote(game, price, changed)]])
+            counts = tuple(get_db().execute("SELECT COUNT(*) FROM notifications WHERE game_id=? AND user_id=?",
+                                            (self.dynamic_id, user_id)).fetchone()[0] for user_id in [self.owner_id, other_id])
+            self.assertEqual(counts, expected)
+        for user_id, target, prices in [(self.owner_id, 10000, [10000, 9000]), (other_id, 9000, [8800, 9000])]:
+            notices = get_db().execute("""SELECT target_cents,trigger_price_cents FROM notifications
+                WHERE user_id=? AND game_id=? ORDER BY id""", (user_id, self.dynamic_id)).fetchall()
+            self.assertEqual([tuple(row) for row in notices], [(target, price) for price in prices])
+        with get_db() as db:
+            db.execute("DELETE FROM user_game_tracking WHERE user_id=? AND game_id=?", (self.owner_id, self.dynamic_id))
+        for changed, price in [(105, "120.00"), (106, "90.00")]:
+            self.run_sync([[quote(game, price, changed)]])
+        self.assertEqual(get_db().execute("SELECT COUNT(*) FROM notifications WHERE game_id=? AND user_id=?",
+                                         (self.dynamic_id, self.owner_id)).fetchone()[0], 2)
+        self.assertEqual(get_db().execute("SELECT COUNT(*) FROM notifications WHERE game_id=? AND user_id=?",
+                                         (self.dynamic_id, other_id)).fetchone()[0], 3)
+
+    @patch("adapters.cheapshark.datetime")
+    def test_same_time_source_notification_failure_retries_only_failed_recipient(self, source_clock):
+        game = next(game for game in load_sync_games(get_db()) if game.game_id == self.dynamic_id)
+        business_client().post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
+        with get_db() as db:
+            other_id = db.execute("""INSERT INTO users(display_name,username,username_normalized,password_hash)
+                VALUES ('RetryWatcher','RetryWatcher','retrywatcher',?)""", (TEST_HASH,)).lastrowid
+            db.execute("INSERT INTO user_game_tracking(user_id,game_id) VALUES (?,?)", (other_id, self.dynamic_id))
+            db.execute("INSERT INTO price_targets(user_id,game_id,target_cents) VALUES (?,?,9000)", (other_id, self.dynamic_id))
+        source_clock.now.return_value = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+        self.run_sync([[quote(game, "128.00", 100)]])
+        get_db().execute(f"""CREATE TRIGGER fail_source_recipient BEFORE INSERT ON notifications
+            WHEN NEW.user_id={self.owner_id}
+            BEGIN SELECT RAISE(ABORT,'offline recipient failure'); END""")
+        low = [[quote(game, "88.00", 101)]]
+        result, _, _ = self.run_sync(low)
+        self.assertEqual((result.inserted, result.notifications, result.notification_failures, result.pending_notifications),
+                         (1, 1, 1, 1))
+        self.assertEqual(get_db().execute("SELECT user_id,target_cents FROM notifications").fetchall()[0][:], (other_id, 9000))
+        retry = get_db().execute("SELECT user_id,target_cents,trigger_price_cents FROM notification_retries").fetchone()
+        self.assertEqual(tuple(retry), (self.owner_id, 10000, 8800))
+        get_db().execute("DROP TRIGGER fail_source_recipient")
+        result, _, _ = self.run_sync(low)
+        self.assertEqual((result.inserted, result.notifications, result.pending_notifications), (0, 1, 0))
+        before = self.snapshot()
+        self.assertEqual(self.run_sync(low)[0].notifications, 0)
+        self.assertEqual(before, self.snapshot())
+
+    @patch("adapters.cheapshark.datetime")
+    def test_source_revision_controls_previous_price_even_if_local_clock_moves_back(self, source_clock):
+        game = next(game for game in load_sync_games(get_db()) if game.game_id == self.dynamic_id)
+        client = business_client()
+        client.post(f"/games/{self.dynamic_id}/target", data={"target_price": "100.00"})
+        for hour, changed, price, expected in [(12, 100, "128.00", 0), (11, 101, "100.00", 1),
+                                               (10, 102, "88.00", 0), (9, 103, "120.00", 0), (8, 104, "90.00", 1)]:
+            source_clock.now.return_value = datetime(2026, 11, 5, hour, tzinfo=timezone.utc)
+            result, _, _ = self.run_sync([[quote(game, price, changed)]])
+            self.assertEqual((result.inserted, result.notifications), (1, expected))
+        page = client.get(f"/games/{self.dynamic_id}").get_data(as_text=True)
+        self.assertIn('<strong>$90.00</strong>', page)
+        before = self.snapshot()
+        source_clock.now.return_value = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+        self.assertEqual(self.run_sync([[quote(game, "0.00", 99)]])[0].inserted, 0)
+        self.assertEqual(self.snapshot(), before)
 
     def test_cli_counts_missing_titles_and_selection_excludes_ineligible_games(self):
         games = load_sync_games(get_db())

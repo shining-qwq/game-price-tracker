@@ -62,6 +62,20 @@ def _utc_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def is_price_event_newer_than_previous(event, previous):
+    """Compare source revisions when both exist; otherwise collection times.
+
+    The adapter validates CheapShark lastChange as an integer. Equal revisions
+    are not new prices, even if fetched later. No previous row means a new
+    baseline; the caller must still avoid notifying on that first observation.
+    """
+    if previous is None:
+        return True
+    if event.source_updated_at is not None and previous["source_updated_at"] is not None:
+        return event.source_updated_at > previous["source_updated_at"]
+    return event.observed_at > previous["observed_at"]
+
+
 def _deliver_notification(db, values, attempted_at):
     """Isolate one recipient's constraint failure and retain its exact snapshot."""
     db.execute("SAVEPOINT notification_delivery")
@@ -165,13 +179,17 @@ def sync_prices(db, source, scenario="price-drop", now=None, *, retry_game_id=No
             previous = db.execute(
                 """
                 SELECT price_cents, observed_at, source_updated_at FROM price_observations
-                WHERE game_id = ? ORDER BY observed_at DESC, id DESC LIMIT 1
+                WHERE game_id = ?
+                ORDER BY CASE WHEN ? THEN source_updated_at END DESC,
+                         observed_at DESC, id DESC LIMIT 1
                 """,
-                (event.game_id,),
+                (event.game_id, event.source_updated_at is not None),
             ).fetchone()
+            is_newer = is_price_event_newer_than_previous(event, previous)
             if (previous is not None and event.source_updated_at is not None
-                    and previous["source_updated_at"] is not None
-                    and event.source_updated_at < previous["source_updated_at"]):
+                    and previous["source_updated_at"] is not None and not is_newer):
+                # Equal/older source revisions cannot replace a valid baseline.
+                # Demo late events still go into history, as before.
                 continue
             cursor = db.execute(
                 """
@@ -183,7 +201,7 @@ def sync_prices(db, source, scenario="price-drop", now=None, *, retry_game_id=No
                 (event.event_id, event.game_id, event.price_cents, event.observed_at, event.source_updated_at),
             )
             inserted += cursor.rowcount
-            if cursor.rowcount == 0 or previous is None or event.observed_at <= previous["observed_at"]:
+            if cursor.rowcount == 0 or previous is None or not is_newer:
                 continue
 
             # Only a new, chronologically later crossing generates notifications.

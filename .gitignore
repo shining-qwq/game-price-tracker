@@ -4,6 +4,7 @@ __pycache__/
 
 # Local virtual environment
 .venv/
+.venv.saved-*/
 .env
 .env.*
 !.env.example
