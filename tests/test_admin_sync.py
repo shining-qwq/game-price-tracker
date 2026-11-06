@@ -3,6 +3,7 @@ import ast
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -10,6 +11,7 @@ from threading import Barrier
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from flask import render_template
 
@@ -23,6 +25,27 @@ class Response(io.BytesIO):
     def __init__(self, payload):
         super().__init__(json.dumps(payload).encode())
         self.headers = {}
+
+
+class SyncFormParser(HTMLParser):
+    def __init__(self, html):
+        super().__init__()
+        self.inputs = {}
+        self.selected_games = []
+        self.buttons = []
+        self.forms = {}
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "input":
+            self.inputs[attrs.get("name")] = attrs.get("value")
+        elif tag == "option" and "selected" in attrs:
+            self.selected_games.append(attrs.get("value"))
+        elif tag == "button":
+            self.buttons.append(attrs)
+        elif tag == "form":
+            self.forms[attrs.get("id")] = attrs
 
 
 class AdminSyncTest(unittest.TestCase):
@@ -128,7 +151,7 @@ class AdminSyncTest(unittest.TestCase):
     def test_admin_demo_success_replay_and_post_redirect_get(self):
         first = self.demo()
         self.assertEqual(first.status_code, 303)
-        self.assertTrue(first.location.endswith("/admin/sync"))
+        self.assertEqual(first.location, "/admin/sync?demo_game_id=1&scenario=price-90#demo-sync-panel")
         after = self.business_records()
         for _ in range(2):
             self.assertEqual(self.admin.get(first.location).status_code, 200)
@@ -151,6 +174,148 @@ class AdminSyncTest(unittest.TestCase):
         self.assertEqual(before, self.business_records())
         self.assertEqual(status, tuple(get_db().execute("SELECT * FROM sync_status WHERE source_name='demo-steam-usd'").fetchone()))
         self.assertEqual(self.logs()[-1]["outcome"], "failure")
+
+    def page_form(self, path="/admin/sync"):
+        response = self.admin.get(path)
+        self.assertEqual(response.status_code, 200)
+        return SyncFormParser(response.get_data(as_text=True))
+
+    def all_records(self):
+        return {**self.business_records(), **{table: [tuple(row) for row in get_db().execute(
+            f"SELECT * FROM {table} ORDER BY 1")] for table in ["sync_status", "admin_action_log", "schema_migrations"]}}
+
+    def test_demo_success_keeps_selected_game_scenario_anchor_and_rotates_event(self):
+        form = self.page_form("/admin/sync?demo_game_id=3&scenario=price-90#demo-sync-panel")
+        original_event = form.inputs["event_id"]
+        result = self.post("/admin/sync/demo", {"game_id": "3", "scenario": "price-90", "event_id": original_event})
+        self.assertEqual(result.status_code, 303)
+        self.assertEqual(result.location, "/admin/sync?demo_game_id=3&scenario=price-90#demo-sync-panel")
+        after = self.all_records()
+        html = self.admin.get(result.location).get_data(as_text=True)
+        restored = SyncFormParser(html)
+        self.assertEqual(restored.selected_games, ["3"])
+        self.assertEqual(restored.inputs["scenario"], "price-90")
+        self.assertNotEqual(restored.inputs["event_id"], original_event)
+        panel = html.split('id="demo-sync-panel"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('role="status"', panel)
+        self.assertIn("模拟游戏 ID 3", panel)
+        for _ in range(2):
+            self.admin.get(result.location)
+        self.assertEqual(self.all_records(), after)
+
+    def test_failed_event_conflict_restores_safe_values_and_can_be_corrected(self):
+        self.post("/admin/sync/demo", {"game_id": "3", "scenario": "price-90", "event_id": "recover-conflict"})
+        before = self.business_records()
+        result = self.post("/admin/sync/demo", {"game_id": "3", "scenario": "price-80", "event_id": "recover-conflict"})
+        self.assertEqual(result.status_code, 303)
+        parts = urlsplit(result.location)
+        self.assertEqual(parts.fragment, "demo-sync-panel")
+        self.assertEqual(parse_qs(parts.query), {"demo_game_id": ["3"], "scenario": ["price-80"],
+                                                "retry_event_id": ["recover-conflict"]})
+        html = self.admin.get(result.location).get_data(as_text=True)
+        form = SyncFormParser(html)
+        self.assertEqual(form.selected_games, ["3"])
+        self.assertEqual(form.inputs["scenario"], "price-80")
+        self.assertEqual(form.inputs["event_id"], "recover-conflict")
+        self.assertIn('role="alert"', html.split('id="demo-sync-panel"', 1)[1].split('</section>', 1)[0])
+        self.assertEqual(self.business_records(), before)
+        self.assertEqual(self.logs()[-1]["outcome"], "failure")
+
+    def test_validation_failure_keeps_each_valid_field_and_drops_invalid_event(self):
+        before = self.business_records()
+        cases = [
+            ({"game_id": "3", "scenario": "price-90", "event_id": "bad\nID"}, "3", "price-90", None),
+            ({"game_id": "3", "scenario": "price-1.5", "event_id": "recover-valid"}, "3", "price-128", "recover-valid"),
+            ({"game_id": "101", "scenario": "price-90", "event_id": "recover-game"}, "1", "price-90", "recover-game"),
+            ({"game_id": "3", "scenario": "price-90", "event_id": "x" * 81}, "3", "price-90", None),
+        ]
+        for data, game_id, scenario, retry in cases:
+            with self.subTest(data=data):
+                result = self.post("/admin/sync/demo", data)
+                query = parse_qs(urlsplit(result.location).query)
+                self.assertEqual(query.get("retry_event_id"), [retry] if retry else None)
+                form = self.page_form(result.location)
+                self.assertEqual(form.selected_games, [game_id])
+                self.assertEqual(form.inputs["scenario"], scenario)
+                if retry:
+                    self.assertEqual(form.inputs["event_id"], retry)
+                else:
+                    self.assertTrue(form.inputs["event_id"].startswith("web-"))
+                self.assertEqual(before, self.business_records())
+                self.assertEqual(self.logs()[-1]["outcome"], "failure")
+
+    def test_get_display_state_never_executes_or_writes_even_for_malformed_values(self):
+        before = self.all_records()
+        bad_ids = ["101", "9999", "-1", "1.5", "01", "1;DROP TABLE games", "9" * 10000]
+        bad_scenarios = ["price-drop", "sequence", "late", "price--1", "price-1.5", "price-1e2",
+                         "price-2147483648", "price-<script>", "x" * 10000]
+        with patch("admin_sync.sync_prices", side_effect=AssertionError("GET cannot sync")), \
+             patch("admin_sync.prepare_demo_sync", side_effect=AssertionError("GET cannot prepare events")):
+            for game_id in bad_ids:
+                form = self.page_form("/admin/sync?" + urlencode({"demo_game_id": game_id, "scenario": "price-90"}))
+                self.assertEqual(form.selected_games, ["1"])
+                self.assertEqual(form.inputs["scenario"], "price-90")
+            for scenario in bad_scenarios:
+                form = self.page_form("/admin/sync?" + urlencode({"demo_game_id": "3", "scenario": scenario}))
+                self.assertEqual(form.selected_games, ["3"])
+                self.assertEqual(form.inputs["scenario"], "price-128")
+            for event in ["", "<script>", "bad\r\nvalue", "x" * 81]:
+                form = self.page_form("/admin/sync?" + urlencode({"retry_event_id": event}))
+                self.assertTrue(form.inputs["event_id"].startswith("web-"))
+            for price in ["0", "2147483647"]:
+                form = self.page_form(f"/admin/sync?demo_game_id=4&scenario=price-{price}&retry_event_id=legal-recovery")
+                self.assertEqual(form.selected_games, ["4"])
+                self.assertEqual(form.inputs["scenario"], "price-" + price)
+                self.assertEqual(form.inputs["event_id"], "legal-recovery")
+        self.assertEqual(before, self.all_records())
+
+    def test_separate_tabs_keep_independent_query_state_without_session_selection(self):
+        first_path = "/admin/sync?demo_game_id=2&scenario=price-29"
+        second_path = "/admin/sync?demo_game_id=4&scenario=price-64"
+        self.token(self.admin)
+        with self.admin.session_transaction() as state:
+            before = dict(state)
+        for path, selected, scenario in [(first_path, "2", "price-29"), (second_path, "4", "price-64"),
+                                          (first_path, "2", "price-29")]:
+            form = self.page_form(path)
+            self.assertEqual(form.selected_games, [selected])
+            self.assertEqual(form.inputs["scenario"], scenario)
+        with self.admin.session_transaction() as state:
+            self.assertEqual(dict(state), before)
+
+    def test_real_sync_has_own_anchor_and_preserves_simulator_display_without_modifying_it(self):
+        page = self.page_form("/admin/sync?demo_game_id=3&scenario=price-90")
+        button = next(item for item in page.buttons if item.get("formaction") == "/admin/sync/cheapshark")
+        self.assertEqual(button["form"], "demo-sync-form")
+        self.assertIn("formnovalidate", button)
+        self.assertEqual(page.forms[button["form"]]["method"], "post")
+        before = [tuple(row) for row in get_db().execute("SELECT * FROM price_observations WHERE game_id<100")]
+        with patch("adapters.cheapshark.urlopen", side_effect=lambda *args, **kwargs: Response(self.quote())):
+            result = self.post("/admin/sync/cheapshark", {"game_id": "3", "scenario": "price-90", "event_id": "not-a-demo-event"})
+        self.assertEqual(result.location, "/admin/sync?demo_game_id=3&scenario=price-90#real-sync-panel")
+        html = self.admin.get(result.location).get_data(as_text=True)
+        restored = SyncFormParser(html)
+        self.assertEqual(restored.selected_games, ["3"])
+        self.assertEqual(restored.inputs["scenario"], "price-90")
+        self.assertNotEqual(restored.inputs["event_id"], "not-a-demo-event")
+        self.assertIn("同步完成", html.split('id="real-sync-panel"', 1)[1].split('</section>', 1)[0])
+        self.assertEqual(before, [tuple(row) for row in get_db().execute("SELECT * FROM price_observations WHERE game_id<100")])
+
+    def test_display_parameters_do_not_weaken_permissions_or_post_validation(self):
+        before = self.all_records()
+        path = "/admin/sync?demo_game_id=3&scenario=price-90"
+        self.assertEqual(self.normal.get(path).status_code, 403)
+        self.assertEqual(self.client().get(path).status_code, 302)
+        result = self.admin.post("/admin/sync/demo?demo_game_id=3&scenario=price-90", data={
+            "game_id": "3", "scenario": "price-90", "event_id": "not-executed", "csrf_token": "bad"})
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(before, self.all_records())
+        # Valid URL defaults cannot repair invalid business POST values.
+        result = self.post("/admin/sync/demo?demo_game_id=3&scenario=price-90", {
+            "game_id": "101", "scenario": "price-drop", "event_id": "not-executed"})
+        self.assertEqual(result.status_code, 303)
+        self.assertEqual(self.logs()[-1]["outcome"], "failure")
+        self.assertEqual(before["price_observations"], self.business_records()["price_observations"])
 
     def test_web_only_accepts_shared_integer_scenario_and_event_id_rules(self):
         invalid = ["price--1", "price-1.5", "price-1e2", "price-2147483648", "price-999999999999999",

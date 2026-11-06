@@ -1,10 +1,11 @@
 {% extends 'base.html' %}
 {% block title %}同步控制台 · 价格观察站{% endblock %}
 {% block content %}
+{% set messages = get_flashed_messages(with_categories=true) %}
 <section class="panel">
   <h1 class="page-title">管理员同步控制台</h1>
   <p class="helper">以下是全站汇总。同步更新共享价格，只向当前仍追踪且达标的用户生成个人通知。所有时间为 UTC。</p>
-  {% for category, message in get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages if not category.startswith(('demo-', 'cheapshark-')) %}
   <p class="flash {{ category }}" role="status">{{ message }}</p>
   {% endfor %}
   <div class="table-wrap">
@@ -20,25 +21,29 @@
   </div>
 </section>
 <div class="content-grid admin-sync-actions">
-  <section class="panel">
+  <section class="panel" id="real-sync-panel">
     <h2>同步真实报价</h2>
+    {% for category, message in messages if category.startswith('cheapshark-') %}
+    <p class="flash {{ 'error' if category == 'cheapshark-error' else 'success' }}" role="{{ 'alert' if category == 'cheapshark-error' else 'status' }}">{{ message }}</p>
+    {% endfor %}
     <p class="helper">只查询至少一人追踪的 Steam/USD 游戏，每款只采集一次。无报价保留旧价；网络失败保留旧价格和上次成功时间。</p>
-    <form method="post" action="{{ url_for('admin_sync_cheapshark') }}">
-      {% include '_csrf.html' %}
-      <button type="submit">同步一次 CheapShark 报价</button>
-    </form>
+    {# Native form association also carries the current display choices, without JS. #}
+    <button type="submit" form="demo-sync-form" formaction="{{ url_for('admin_sync_cheapshark') }}" formnovalidate>同步一次 CheapShark 报价</button>
   </section>
-  <section class="panel">
+  <section class="panel" id="demo-sync-panel">
     <h2>模拟价格演示</h2>
+    {% for category, message in messages if category.startswith('demo-') %}
+    <p class="flash {{ 'error' if category == 'demo-error' else 'success' }}" role="{{ 'alert' if category == 'demo-error' else 'status' }}">{{ message }}</p>
+    {% endfor %}
     <p class="helper">从现有四款模拟游戏中选择目标，金额为整数美元（0～{{ max_demo_dollars }}），以整数美分保存。模拟价格全站共享；事件 ID 全局唯一，重放必须保持同一游戏和价格。</p>
-    <form method="post" action="{{ url_for('admin_sync_demo') }}" class="auth-form">
+    <form id="demo-sync-form" method="post" action="{{ url_for('admin_sync_demo') }}" class="auth-form">
       {% include '_csrf.html' %}
       <label for="demo_game_id">目标模拟游戏</label>
       <select id="demo_game_id" name="game_id" required>
-        {% for item in demo_games %}<option value="{{ item.id }}">{{ item.title }}</option>{% endfor %}
+        {% for item in demo_games %}<option value="{{ item.id }}"{% if item.id == selected_demo_game_id %} selected{% endif %}>{{ item.title }}</option>{% endfor %}
       </select>
       <label for="scenario">场景</label>
-      <input id="scenario" name="scenario" value="price-128" maxlength="16" placeholder="price-128" required>
+      <input id="scenario" name="scenario" value="{{ selected_demo_scenario }}" maxlength="16" placeholder="price-128" required>
       <label for="event_id">事件 ID（1～80 位字母、数字、下划线或短横线）</label>
       <input id="event_id" name="event_id" value="{{ default_event_id }}" maxlength="80" autocomplete="off" required>
       <button type="submit">同步这条模拟观测</button>

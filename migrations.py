@@ -49,6 +49,15 @@ def upgrade_notification_retries(db):
         db.execute((Path(__file__).with_name("notification_retries.sql")).read_text(encoding="utf-8"))
 
 
+def upgrade_notification_read_state(db):
+    """Existing notifications remain owned by the same user and start unread."""
+    with migration_transaction(db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(notifications)")}
+        if "read_at" not in columns:
+            db.execute("ALTER TABLE notifications ADD COLUMN read_at TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,read_at)")
+
+
 def upgrade_admin_action_log(db):
     with migration_transaction(db):
         db.execute((Path(__file__).with_name("admin_action_log.sql")).read_text(encoding="utf-8"))

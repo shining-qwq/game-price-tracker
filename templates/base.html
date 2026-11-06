@@ -13,7 +13,7 @@
       <span>价格观察站</span>
     </a>
     <nav class="header-nav" aria-label="主要导航">
-      <a href="{{ url_for('notifications') }}">{{ '我的通知' if current_user else '站内通知（需登录）' }}</a>
+      <a href="{{ url_for('notifications') }}">{% if current_user %}我的通知（未读 {{ unread_notification_count }}）{% else %}站内通知（需登录）{% endif %}</a>
       {% if current_user %}
       {% if current_user.role == 'admin' %}<a href="{{ url_for('admin_sync_page') }}">同步控制台</a>{% endif %}
       <span>{{ current_user.username }}{% if current_user.role == 'admin' %} · 管理员{% endif %}</span>

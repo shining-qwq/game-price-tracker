@@ -1,24 +1,41 @@
 {% extends "base.html" %}
 {% block title %}站内通知 · 价格观察站{% endblock %}
 {% block content %}
+{% for category, message in get_flashed_messages(with_categories=true) %}
+<p class="flash {{ category }}" role="status">{{ message }}</p>
+{% endfor %}
 <section class="panel history-panel">
   <div class="section-heading">
     <h1 style="font-size: 32px">我的站内通知</h1>
     <span class="record-count">{{ notifications|length }} 条 · {{ current_user.username }}</span>
   </div>
-  <p class="helper">仅同步时从高于目标价降至目标价或以下才通知。持续低价不重复提醒，涨回后可再次触发。触发时间为价格观测时间。</p>
+  <p class="helper">仅同步时从高于目标价降至目标价或以下才通知。持续低价不重复提醒，涨回后可再次触发。触发时间为价格观测时间，所有时间为 UTC。打开列表不会自动标为已读。</p>
+  <p class="helper">当前未读 {{ unread_notification_count }} 条；已读状态仅属于你，管理员也只能管理自己的通知。</p>
   {% if notifications %}
+  <form method="post" action="{{ url_for('mark_all_notifications_read') }}" class="notification-read-all">
+    {% include '_csrf.html' %}
+    <button type="submit"{% if not unread_notification_count %} disabled{% endif %}>全部标为已读</button>
+  </form>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>游戏</th><th>来源</th><th>触发价格（USD）</th><th>当时目标价（USD）</th><th>触发时间</th></tr></thead>
+      <thead><tr><th>游戏</th><th>来源</th><th>触发价格（USD）</th><th>当时目标价（USD）</th><th>触发时间</th><th>状态</th><th>操作</th></tr></thead>
       <tbody>
         {% for item in notifications %}
-        <tr>
+        <tr data-notification-id="{{ item.id }}">
           <td><a href="{{ url_for('game_detail', game_id=item.game_id) }}">{{ item.title }}</a></td>
           <td>{{ 'CheapShark / Steam' if item.data_source == 'cheapshark' else '模拟数据' }}</td>
           <td>{{ item.trigger_price_cents|money }}</td>
           <td>{{ item.target_cents|money }}</td>
           <td>{{ item.observed_at }}</td>
+          <td>{% if item.read_at is none %}<strong>未读</strong>{% else %}已读<br><span class="helper">{{ item.read_at }} UTC</span>{% endif %}</td>
+          <td>
+            {% if item.read_at is none %}
+            <form method="post" action="{{ url_for('mark_notification_read', notification_id=item.id) }}">
+              {% include '_csrf.html' %}
+              <button type="submit">标记已读</button>
+            </form>
+            {% else %}—{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>

@@ -1,10 +1,11 @@
 {% extends 'base.html' %}
 {% block title %}{{ '模拟游戏管理' if navigation_section == 'demo' else '真实报价游戏' }} · 价格观察站{% endblock %}
 {% block content %}
-{% for category, message in get_flashed_messages(with_categories=true) %}
+{% set messages = get_flashed_messages(with_categories=true) %}
+{% for category, message in messages if not category.startswith('demo-tracking-') %}
 <p class="flash {{ category }}" role="status">{{ message }}</p>
 {% endfor %}
-<section class="panel">
+<section class="panel"{% if navigation_section == 'demo' %} id="demo-game-management"{% endif %}>
   {% if navigation_section == 'demo' %}
   <h1 class="page-title">模拟游戏管理</h1>
   <p class="helper">模拟数据固定为以下四款演示游戏，不通过外部搜索增加。模拟价格和历史全站共享，个人追踪状态互不影响。</p>
@@ -13,12 +14,20 @@
   {% else %}
   <p><a href="{{ url_for('login', next=url_for('game_category', source='demo')) }}">登录后管理个人追踪</a>；四款模拟游戏和共享价格可以公开浏览。</p>
   {% endif %}
+  {% set tracking_messages = messages|selectattr('0', 'in', ['demo-tracking-1', 'demo-tracking-2', 'demo-tracking-3', 'demo-tracking-4'])|list %}
+  {% if tracking_messages %}
+  <div class="demo-management-feedback">
+    {% for category, message in tracking_messages %}
+    <p class="flash success" role="status">{{ message }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
   <div class="table-wrap">
     <table aria-label="固定四款模拟游戏">
       <thead><tr><th>游戏名称</th><th>游戏类型</th><th>当前模拟价格（USD）</th><th>我的追踪状态</th><th>详情</th><th>模拟追踪操作</th></tr></thead>
       <tbody>
         {% for item in demo_games %}
-        <tr data-game-id="{{ item.id }}">
+        <tr id="demo-game-{{ item.id }}" class="demo-game-row" data-game-id="{{ item.id }}">
           <td>{{ item.title }}</td><td>{{ item.genre }}</td>
           <td>{{ item.current_price_cents|money }}{% if item.current_price_cents is none %}（暂无模拟报价）{% endif %}</td>
           <td>{% if not current_user %}登录后管理个人追踪{% elif item.is_tracked_by_current_user %}已追踪{% else %}未追踪{% endif %}</td>

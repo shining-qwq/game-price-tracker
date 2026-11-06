@@ -173,13 +173,13 @@ class DemoManagementTest(unittest.TestCase):
         for _ in range(2):
             result = self.change(self.alice)
             self.assertEqual(result.status_code, 303)
-            self.assertEqual(result.location, "/games?source=demo")
+            self.assertEqual(result.location, "/games?source=demo#demo-game-1")
         self.assertEqual(get_db().execute("SELECT COUNT(*) FROM user_game_tracking WHERE user_id=? AND game_id=1", (self.alice_id,)).fetchone()[0], 1)
         rows = self.relationships()
         self.alice.get(result.location)
         self.assertEqual(rows, self.relationships())
         for _ in range(2):
-            self.assertEqual(self.change(self.alice, action="remove").location, "/games?source=demo")
+            self.assertEqual(self.change(self.alice, action="remove").location, "/games?source=demo#demo-game-1")
         self.assertEqual(self.states(self.alice)[0], "未追踪")
 
     def test_management_and_actions_never_call_external_adapters(self):
@@ -258,10 +258,56 @@ class DemoManagementTest(unittest.TestCase):
         self.assertIn("取消模拟追踪", self.alice.get("/games/1").get_data(as_text=True))
         self.assertEqual(self.states(self.alice)[0], "已追踪")
         result = self.change(self.alice, action="remove", return_to="https://evil.invalid")
-        self.assertEqual(result.location, "/games?source=demo")
+        self.assertEqual(result.location, "/games?source=demo#demo-game-1")
         result = self.change(self.alice, return_to="//evil.invalid")
         self.assertEqual(result.location, "/games/1")
         self.assertEqual(self.states(self.alice)[0], "已追踪")
+
+    def test_continuous_management_actions_return_to_each_verified_row_with_visible_result(self):
+        expected = ["未追踪"] * 4
+        for action in ["add", "remove"]:
+            for game_id in [1, 2, 3, 4]:
+                with self.subTest(action=action, game_id=game_id):
+                    result = self.change(self.alice, game_id, action)
+                    self.assertEqual(result.status_code, 303)
+                    self.assertEqual(result.location, f"/games?source=demo#demo-game-{game_id}")
+                    html = self.alice.get(result.location).get_data(as_text=True)
+                    self.assertIn('id="demo-game-management"', html)
+                    page = ManagementParser(html)
+                    self.assertEqual([row["id"] for row in page.rows], [1, 2, 3, 4])
+                    expected[game_id - 1] = "已追踪" if action == "add" else "未追踪"
+                    self.assertEqual([row["cells"][3] for row in page.rows], expected)
+                    row = html.split(f'id="demo-game-{game_id}"', 1)[1].split('</tr>', 1)[0]
+                    self.assertNotIn('role="status"', row)
+                    feedback = html.split('class="demo-management-feedback"', 1)[1].split('</div>', 1)[0]
+                    self.assertIn('role="status"', feedback)
+                    self.assertIn("已加入你的模拟追踪" if action == "add" else "已取消你的模拟追踪", feedback)
+        self.opener.assert_not_called()
+
+    def test_feedback_does_not_change_table_cell_contents(self):
+        for action in ["add", "remove", "add"]:
+            result = self.change(self.alice, 2, action)
+            html = self.alice.get(result.location).get_data(as_text=True)
+            table = html.split('<table aria-label="固定四款模拟游戏">', 1)[1].split('</table>', 1)[0]
+            self.assertNotIn('class="flash', table)
+            page = ManagementParser(html)
+            self.assertEqual(len(page.rows), 4)
+            self.assertTrue(all(len(row["cells"]) == 6 for row in page.rows))
+            self.assertEqual(page.rows[1]["cells"][5], "取消模拟追踪" if action == "add" else "加入模拟追踪")
+    def test_explicit_detail_return_and_untrusted_urls_cannot_choose_destination(self):
+        for action in ["add", "remove"]:
+            result = self.change(self.alice, 2, action, return_to="detail", return_url="https://evil.invalid")
+            self.assertEqual(result.status_code, 303)
+            self.assertEqual(result.location, "/games/2")
+        # A form's game_id cannot replace the already-validated route ID.
+        result = self.alice.post("/games/2/demo-tracking", data={
+            "game_id": "4", "action": "add", "return_to": "management", "return_url": "//evil.invalid",
+            "csrf_token": self.token(self.alice)})
+        self.assertEqual(result.location, "/games?source=demo#demo-game-2")
+        for marker in ["https://evil.invalid", "//evil.invalid", "management#forged", "detail?next=https://evil.invalid"]:
+            result = self.change(self.alice, 2, "remove", return_to=marker, return_url=marker)
+            self.assertEqual(result.location, "/games?source=demo#demo-game-2")
+        self.assertIn('name="return_to" value="detail"', self.alice.get("/games/2").get_data(as_text=True))
 
     def test_demo_category_link_is_stable_even_when_following_other_game(self):
         self.change(self.alice, 4)

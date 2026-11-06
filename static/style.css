@@ -55,6 +55,7 @@ a { color: inherit; }
 .header-nav { flex-wrap: wrap; }
 .header-nav span { color: var(--muted); font-size: 13px; }
 .nav-logout { padding: 6px 10px; font-size: 13px; }
+.notification-read-all button:disabled { opacity: .55; cursor: default; }
 .auth-panel { max-width: 560px; margin: 24px auto; }
 .admin-sync-actions { margin-top: 24px; }
 .auth-form { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
@@ -253,6 +254,9 @@ h1 {
 .flash { margin: 0; padding: 12px 16px; border-radius: 10px; font-weight: 650; }
 .flash.success { color: var(--mint-ink); background: var(--mint); border: 1px solid #9fd6b7; }
 .flash.error { color: var(--danger); background: #fff0f0; border: 1px solid #edb7b7; }
+.demo-game-row, #demo-game-management, #demo-sync-panel, #real-sync-panel { scroll-margin-top: 24px; }
+.demo-management-feedback { position: sticky; top: 12px; z-index: 1; margin-bottom: 12px; }
+.demo-game-row { scroll-margin-top: 96px; }
 
 .reminder {
   margin-top: 22px;

@@ -32,6 +32,7 @@
     <form method="post" action="{{ url_for('change_demo_tracking', game_id=game.id) }}" class="detail-track-form">
       {% include '_csrf.html' %}
       <input type="hidden" name="action" value="{{ 'remove' if is_tracked_by_current_user else 'add' }}">
+      <input type="hidden" name="return_to" value="detail">
       <button type="submit">{{ '取消模拟追踪' if is_tracked_by_current_user else '加入模拟追踪' }}</button>
       <span>只影响你，不改变真实游戏的追踪关系</span>
     </form>

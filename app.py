@@ -15,7 +15,8 @@ from services.accounts import normalize_username, hash_password
 from services.sync_inputs import prepare_demo_sync
 from werkzeug.security import check_password_hash
 from migrations import (upgrade_game_identifiers, upgrade_accounts, upgrade_notification_retries,
-                        upgrade_user_tracking, upgrade_admin_action_log, migration_transaction)
+                        upgrade_notification_read_state, upgrade_user_tracking,
+                        upgrade_admin_action_log, migration_transaction)
 from security import configure_security, init_security, csrf_token, login_required, admin_required, safe_next
 
 
@@ -109,6 +110,7 @@ def initialize_database(db):
     upgrade_game_identifiers(db)
     upgrade_accounts(db)
     upgrade_notification_retries(db)
+    upgrade_notification_read_state(db)
     upgrade_user_tracking(db)
     upgrade_admin_action_log(db)
 
@@ -133,6 +135,7 @@ def upgrade_db_command():
                 upgrade_game_identifiers(db, backfill_legacy="steam_app_id" not in columns)
                 upgrade_accounts(db)
                 upgrade_notification_retries(db)
+                upgrade_notification_read_state(db)
                 upgrade_user_tracking(db)
                 upgrade_admin_action_log(db)
         except sqlite3.DatabaseError:
@@ -231,6 +234,17 @@ def format_money(cents):
         return "—"
     dollars, remainder = divmod(cents, 100)
     return f"${dollars:,}.{remainder:02d}"
+
+
+@app.context_processor
+def notification_navigation_context():
+    if g.user is None:
+        return {"unread_notification_count": None}
+    count = get_db().execute(
+        "SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL",
+        (g.user["id"],),
+    ).fetchone()[0]
+    return {"unread_notification_count": count}
 
 
 @app.route("/")
@@ -503,7 +517,7 @@ def game_detail(game_id):
     notification_count = db.execute(
         "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND game_id = ?",
         (user_id, game_id),
-    ).fetchone()[0]
+    ).fetchone()[0] if user_id is not None else 0
     if game["data_source"] == "cheapshark":
         counterpart = db.execute(
             "SELECT id FROM games WHERE id=? AND data_source='demo'",
@@ -543,10 +557,13 @@ def change_demo_tracking(game_id):
             db.execute("INSERT INTO user_game_tracking(user_id,game_id) VALUES (?,?) ON CONFLICT(user_id,game_id) DO NOTHING", (g.user["id"], game_id))
         else:
             db.execute("DELETE FROM user_game_tracking WHERE user_id=? AND game_id=?", (g.user["id"], game_id))
-    flash("已加入你的模拟追踪。" if action == "add" else "已取消你的模拟追踪，目标价与通知保留。", "success")
     # The submitted value selects a fixed destination, never a redirect URL.
-    to_management = request.form.get("return_to") == "management" or action == "remove"
-    destination = url_for("game_category", source="demo") if to_management else url_for("game_detail", game_id=game_id)
+    return_to = request.form.get("return_to")
+    to_management = return_to == "management" or (return_to != "detail" and action == "remove")
+    flash("已加入你的模拟追踪。" if action == "add" else "已取消你的模拟追踪，目标价与通知保留。",
+          f"demo-tracking-{game_id}" if to_management else "success")
+    destination = (url_for("game_category", source="demo", _anchor=f"demo-game-{game_id}")
+                   if to_management else url_for("game_detail", game_id=game_id))
     return redirect(destination, code=303)
 
 
@@ -607,6 +624,38 @@ def notifications():
         (g.user["id"],),
     ).fetchall()
     return render_template("notifications.html", notifications=rows, **navigation_context(None))
+
+
+@app.post("/notifications/<int:notification_id>/read")
+@login_required
+def mark_notification_read(notification_id):
+    if not 0 < notification_id <= 9223372036854775807:
+        abort(404, description="通知不存在或不可访问。")
+    db = get_db()
+    with db:
+        changed = db.execute(
+            """UPDATE notifications SET read_at=CURRENT_TIMESTAMP
+               WHERE id=? AND user_id=? AND read_at IS NULL""",
+            (notification_id, g.user["id"]),
+        ).rowcount
+        if not changed and db.execute(
+            "SELECT 1 FROM notifications WHERE id=? AND user_id=?", (notification_id, g.user["id"])
+        ).fetchone() is None:
+            abort(404, description="通知不存在或不可访问。")
+    flash("通知已标记为已读。" if changed else "通知已是已读状态。", "success")
+    return redirect(url_for("notifications"), code=303)
+
+
+@app.post("/notifications/read-all")
+@login_required
+def mark_all_notifications_read():
+    with get_db() as db:
+        changed = db.execute(
+            "UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE user_id=? AND read_at IS NULL",
+            (g.user["id"],),
+        ).rowcount
+    flash(f"已将 {changed} 条通知标为已读。" if changed else "没有未读通知。", "success")
+    return redirect(url_for("notifications"), code=303)
 
 
 from admin_sync import register_admin_sync

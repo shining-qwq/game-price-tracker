@@ -26,12 +26,13 @@ try:
     print("NOTIFICATIONS (selected local user; integer USD cents)")
     for row in db.execute("""
         SELECT n.id, g.title, g.data_source, n.source_event_id, n.trigger_price_cents,
-               n.target_cents, n.observed_at, n.created_at
+               n.target_cents, n.observed_at, n.created_at, n.read_at
         FROM notifications n JOIN games g ON g.id=n.game_id
         WHERE n.user_id=? ORDER BY n.observed_at, n.id
     """, (args.user_id,)):
         print(dict(row))
     print("notification_count =", db.execute("SELECT COUNT(*) FROM notifications WHERE user_id=?", (args.user_id,)).fetchone()[0])
+    print("unread_notification_count =", db.execute("SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL", (args.user_id,)).fetchone()[0])
     print("PENDING NOTIFICATIONS (selected local user; original crossing snapshots)")
     for row in db.execute("""
         SELECT user_id, game_id, source_event_id, trigger_price_cents, target_cents,

@@ -38,6 +38,34 @@ def result_summary(result):
     return True, summary
 
 
+def demo_display_state(db, values, *, game_key="demo_game_id", keep_event=False):
+    """Read-only, bounded defaults for one page; never prepare or run a sync."""
+    games = load_demo_games(db)
+    selected_id = games[0]["id"] if games else None
+    try:
+        selected_id = resolve_demo_game(db, values.get(game_key))["id"]
+    except DemoInputError:
+        pass
+    scenario = "price-128"
+    candidate = values.get("scenario", "")
+    if len(candidate) <= 16:
+        try:
+            validate_demo_request(candidate, integer_only=True)
+            scenario = candidate
+        except DemoInputError:
+            pass
+    state = {"demo_game_id": selected_id, "scenario": scenario}
+    if keep_event:
+        event_id = values.get("event_id" if game_key == "game_id" else "retry_event_id")
+        if event_id is not None and len(event_id) <= 80:
+            try:
+                validate_demo_request(scenario, event_id, integer_only=True, require_event_id=True)
+                state["retry_event_id"] = event_id
+            except DemoInputError:
+                pass
+    return state
+
+
 def register_admin_sync(app, get_db, navigation_context):
     @app.get("/admin/sync")
     @admin_required
@@ -57,6 +85,7 @@ def register_admin_sync(app, get_db, navigation_context):
                                       a.summary,a.created_at,a.finished_at
             FROM admin_action_log a JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 20""").fetchall()
         demo_games = load_demo_games(db)
+        display_state = demo_display_state(db, request.args, keep_event=True)
         demo_statistics = db.execute("""
             SELECT g.id,g.title,latest.price_cents AS current_price_cents,
                    history.lowest_price_cents,COALESCE(history.history_count,0) AS history_count,
@@ -79,11 +108,28 @@ def register_admin_sync(app, get_db, navigation_context):
         """, DEMO_GAME_IDS).fetchall()
         return render_template("admin_sync.html", sources=sources, actions=actions,
                                demo_games=demo_games, demo_statistics=demo_statistics,
-                               default_event_id="web-" + uuid4().hex, max_demo_dollars=INT_MAX,
+                               selected_demo_game_id=display_state["demo_game_id"],
+                               selected_demo_scenario=display_state["scenario"],
+                               default_event_id=display_state.get("retry_event_id") or "web-" + uuid4().hex,
+                               max_demo_dollars=INT_MAX,
                                **navigation_context(None))
 
     def run_action(source):
         db = get_db()
+        # These values only choose the next GET's display. Business validation
+        # below still checks the original POST and never uses fallback values.
+        display_state = demo_display_state(db, request.form, game_key="game_id", keep_event=source == "demo")
+
+        def action_redirect(*, keep_event=False):
+            state = dict(display_state)
+            if not keep_event:
+                state.pop("retry_event_id", None)
+            return redirect(url_for("admin_sync_page", **state,
+                                    _anchor="demo-sync-panel" if source == "demo" else "real-sync-panel"), code=303)
+
+        def action_flash(message, success=False):
+            flash(message, source + ("-success" if success else "-error"))
+
         # Persist intent before doing work. If audit storage is unavailable, do
         # not start an operation that cannot be traced.
         try:
@@ -93,8 +139,8 @@ def register_admin_sync(app, get_db, navigation_context):
                     VALUES (?,?,?,'running','同步请求已受理，结果尚未记录。')""",
                     (g.user["id"], "sync_" + source, source)).lastrowid
         except sqlite3.DatabaseError:
-            flash("暂时无法记录审计，本次未启动同步。请确认已升级数据库，或等待数据库空闲后重试。", "error")
-            return redirect(url_for("admin_sync_page"), code=303)
+            action_flash("暂时无法记录审计，本次未启动同步。请确认已升级数据库，或等待数据库空闲后重试。")
+            return action_redirect(keep_event=True)
 
         demo_game = None
         validated_scenario = None
@@ -158,10 +204,10 @@ def register_admin_sync(app, get_db, navigation_context):
                               WHERE id=? AND user_id=?""",
                            ("success" if success else "failure", summary, action_id, g.user["id"]))
         except sqlite3.DatabaseError:
-            flash("同步操作已尝试，但审计结果未能保存。请核对数据和未完成记录，勿直接换新事件 ID 重试。", "error")
+            action_flash("同步操作已尝试，但审计结果未能保存。请核对数据和未完成记录，勿直接换新事件 ID 重试。")
         else:
-            flash(summary, "success" if success else "error")
-        return redirect(url_for("admin_sync_page"), code=303)
+            action_flash(summary, success)
+        return action_redirect(keep_event=not success)
 
     @app.post("/admin/sync/demo")
     @admin_required
