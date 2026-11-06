@@ -18,6 +18,7 @@ from migrations import (upgrade_game_identifiers, upgrade_accounts, upgrade_noti
                         upgrade_notification_read_state, upgrade_user_tracking,
                         upgrade_admin_action_log, migration_transaction)
 from security import configure_security, init_security, csrf_token, login_required, admin_required, safe_next
+from price_chart import build_price_chart
 
 
 # Reserved legacy owner, used only when creating the original demo fixtures.
@@ -499,7 +500,7 @@ def game_detail(game_id):
 
     history = db.execute(
         """
-        SELECT source_event_id, price_cents, observed_at
+        SELECT id, source_event_id, price_cents, observed_at
         FROM price_observations
         WHERE game_id = ?
         ORDER BY observed_at DESC, id DESC
@@ -532,6 +533,7 @@ def game_detail(game_id):
         "game_detail.html",
         game=game,
         history=history,
+        price_chart=build_price_chart(history),
         notification_count=notification_count,
         sync_status=sync_status,
         source_label="CheapShark · Steam · USD" if game["data_source"] == "cheapshark" else "模拟数据 · USD",

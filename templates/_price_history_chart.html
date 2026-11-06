@@ -1,0 +1,47 @@
+<figure class="price-history-chart" id="price-history-chart">
+  <h3>价格走势（USD）</h3>
+  {% if price_chart.count %}
+  <p class="helper" id="price-chart-summary">{{ '模拟' if not is_real else 'CheapShark Steam' }}已记录报价，共 {{ price_chart.count }} 次；
+    最低 {{ price_chart.lowest_cents|money }}，最高 {{ price_chart.highest_cents|money }}。
+    {% if price_chart.count == 1 %}仅有一次观测，暂不连线。{% endif %}
+    <a href="#price-history-table">查看下方完整数据表</a>。
+  </p>
+  <div class="price-chart-scroll">
+    <svg class="price-chart-svg" viewBox="0 0 {{ price_chart.width }} {{ price_chart.height }}"
+         xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="price-chart-title price-chart-description">
+      <title id="price-chart-title">{{ game.title }}的已记录价格走势（USD）</title>
+      <desc id="price-chart-description">横轴为观测时间（UTC），从左到右按时间升序；纵轴为美元，从零起算。
+        {{ price_chart.first_time }} 至 {{ price_chart.last_time }}，共 {{ price_chart.count }} 次观测，
+        最低 {{ price_chart.lowest_cents|money }}，最高 {{ price_chart.highest_cents|money }}。
+        圆点表示观测，线段只连接已记录报价，不表示期间持续售价；下方表格提供完整时间、事件和金额。</desc>
+      <text class="price-chart-axis-title" x="{{ price_chart.left }}" y="18">价格（USD）</text>
+      {% for tick in price_chart.y_ticks %}
+      <line class="price-chart-grid" x1="{{ price_chart.left }}" y1="{{ tick.y }}" x2="{{ price_chart.right }}" y2="{{ tick.y }}" />
+      <text class="price-chart-tick" x="{{ price_chart.left - 12 }}" y="{{ tick.y }}" text-anchor="end" dy="0.35em">{{ tick.price_cents|money }}</text>
+      {% endfor %}
+      <path class="price-chart-axis" d="M {{ price_chart.left }} {{ price_chart.top }} V {{ price_chart.bottom }} H {{ price_chart.right }}" />
+      {% for tick in price_chart.x_ticks %}
+      <line class="price-chart-axis" x1="{{ tick.x }}" y1="{{ price_chart.bottom }}" x2="{{ tick.x }}" y2="{{ price_chart.bottom + 6 }}" />
+      <text class="price-chart-tick" x="{{ tick.x }}" y="{{ price_chart.bottom + 23 }}"
+            text-anchor="{{ 'start' if loop.first and not loop.last else 'end' if loop.last and not loop.first else 'middle' }}">
+        <tspan x="{{ tick.x }}">{{ tick.date }}</tspan><tspan x="{{ tick.x }}" dy="16">{{ tick.time }}</tspan>
+      </text>
+      {% endfor %}
+      <text class="price-chart-axis-title" x="{{ (price_chart.left + price_chart.right) // 2 }}" y="330" text-anchor="middle">观测时间（UTC）</text>
+      {% if price_chart.count > 1 %}
+      <polyline class="price-chart-line" points="{{ price_chart.points }}" />
+      {% endif %}
+      {% for marker in price_chart.markers %}
+      <circle class="price-chart-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="3.5">
+        <title>{{ marker.observed_at }} UTC · {{ marker.price_cents|money }}</title>
+      </circle>
+      {% endfor %}
+    </svg>
+  </div>
+  <figcaption class="helper">图表按时间升序，数据表最新在前。点和折线表示已记录观测；连线不代表期间一直以该价出售。
+    {% if price_chart.markers_limited %}历史较长，保留完整折线，仅显示首尾圆点；全部 {{ price_chart.count }} 条记录仍在下表。{% endif %}
+    小屏幕可横向滚动查看坐标。</figcaption>
+  {% else %}
+  <p class="helper" id="price-chart-summary">暂无已记录报价，首次采集后显示价格走势。缺失报价不代表免费；下方仍保留数据表。</p>
+  {% endif %}
+</figure>

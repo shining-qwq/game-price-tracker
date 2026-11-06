@@ -399,6 +399,17 @@ button:hover { background: #2d43bc; }
 
 .history-panel { margin-top: 22px; padding-bottom: 16px; }
 .history-panel .section-heading { margin-bottom: 18px; }
+.price-history-chart { margin: 0 0 24px; }
+.price-history-chart h3 { margin: 0; font-size: 18px; }
+.price-chart-scroll { overflow-x: auto; margin: 16px 0 8px; }
+.price-chart-svg { display: block; width: 100%; min-width: 760px; height: auto; }
+.price-chart-grid { stroke: var(--line); stroke-dasharray: 4 4; }
+.price-chart-axis { fill: none; stroke: var(--muted); }
+.price-chart-tick { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.price-chart-axis-title { fill: var(--ink); font-size: 13px; font-weight: 650; }
+.price-chart-line { fill: none; stroke: var(--blue); stroke-width: 2.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.price-chart-marker { fill: var(--blue); stroke: white; stroke-width: 1.5; }
+.history-table-caption { text-align: left; padding: 0 0 12px; color: var(--muted); font-size: 13px; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { padding: 11px 13px; color: var(--muted); background: #f6f7fb; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; letter-spacing: .04em; }

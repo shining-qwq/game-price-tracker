@@ -117,16 +117,18 @@
   </section>
 </div>
 
-<section class="panel history-panel">
+<section class="panel history-panel" id="price-history">
   <div class="section-heading">
     <div>
-      <p class="kicker">最新在前</p>
+      <p class="kicker">已记录报价</p>
       <h2>价格历史</h2>
     </div>
     <span class="record-count">{{ history|length }} 次观测</span>
   </div>
-  <div class="table-wrap">
+  {% include '_price_history_chart.html' %}
+  <div class="table-wrap" id="price-history-table" tabindex="0" role="region" aria-label="完整价格历史数据表">
     <table>
+      <caption class="history-table-caption">完整价格历史 · 观测时间为 UTC · 最新在前 · 金额为 USD</caption>
       <thead>
         <tr>
           <th scope="col">观测时间</th>
